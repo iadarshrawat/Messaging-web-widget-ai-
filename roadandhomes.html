@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Road and Homes</title>
+</head>
+
+<body>
+  <h1>Support Page (Road and Homes)</h1>
+  <p>Click on the chat widget to talk with us.</p>
+
+  <!-- Step 1: Zendesk Script -->
+  <!-- Start of mrbrandsconsumersupport Zendesk Widget script -->
+  <script id="ze-snippet"
+    src="https://static.zdassets.com/ekr/snippet.js?key=0cb431c9-53f0-4048-a9fb-a3b71568019b"> </script>
+  <!-- End of mrbrandsconsumersupport Zendesk Widget script -->
+
+  <script>
+    window.addEventListener("load", function () {
+
+      if (typeof zE === "undefined") {
+        console.log("Zendesk NOT loaded ");
+        return;
+      }
+
+      // Widget open event
+      zE('messenger:on', 'open', function () {
+        console.log("Widget Opened");
+      });
+
+      // Widget close event
+      zE('messenger:on', 'close', function () {
+        console.log("Widget Closed ");
+      });
+
+    });
+  </script>
+
+</body>
+
+</html>
