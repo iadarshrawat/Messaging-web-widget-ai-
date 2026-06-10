@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { createCustomObjectType } from "./src/config/zendesk.js";
 import sunshineRoutes from "./src/routes/sunshine.route.js";
+import { runReport } from "./src/controllers/report.js";
 
 dotenv.config();
 
@@ -44,6 +45,38 @@ async function startServer() {
           console.error("Zendesk setup error:", err.message);
         });
       }
+
+      // Setup CSAT Report Cron Job (runs every 1 minute)
+      console.log("🕐 Setting up CSAT Report cron job (every 1 minute)...");
+      let reportRunning = false;
+
+      setInterval(async () => {
+        if (reportRunning) {
+          console.log("⏭️  Skipping CSAT report (previous run still in progress)");
+          return;
+        }
+
+        reportRunning = true;
+        try {
+          console.log(`\n📅 [${new Date().toISOString()}] Starting CSAT report run...`);
+          const result = await runReport();
+          
+          if (result.success) {
+            console.log(`✅ CSAT report completed successfully`);
+            if (result.summary) {
+              console.log(`   📊 Processed ${result.summary.total_tickets} tickets, CSAT: ${result.summary.csat_percent}%`);
+            }
+          } else {
+            console.error(`❌ CSAT report failed: ${result.error}`);
+          }
+        } catch (err) {
+          console.error(`❌ Unexpected error in CSAT report: ${err.message}`);
+        } finally {
+          reportRunning = false;
+        }
+      }, 60000); // 60000 ms = 1 minute
+
+      console.log("✅ CSAT Report cron job started");
     });
   } catch (err) {
     console.error("Failed to start server:", err);
