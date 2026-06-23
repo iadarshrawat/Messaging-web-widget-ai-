@@ -1,9 +1,9 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { createCustomObjectType } from "./src/config/zendesk.js";
 import sunshineRoutes from "./src/routes/sunshine.route.js";
 import { runReport } from "./src/controllers/report.js";
+import { connectDB } from "./src/config/mongo.js";
 
 dotenv.config();
 
@@ -35,16 +35,9 @@ async function startServer() {
     // Start listening immediately
     app.listen(PORT, () => {
       console.log(`Server running at http://localhost:${PORT}`);
-      
-      // Setup Zendesk custom object in background (with timeout)
-      if (process.env.ZENDESK_EMAIL && process.env.ZENDESK_API_TOKEN && process.env.ZENDESK_DOMAIN) {
-        Promise.race([
-          createCustomObjectType(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
-        ]).catch(err => {
-          console.error("Zendesk setup error:", err.message);
-        });
-      }
+
+      // connect with mongoDB?
+      connectDB();
 
       // Setup CSAT Report Cron Job (runs every 1 minute)
       console.log("🕐 Setting up CSAT Report cron job (every 1 minute)...");

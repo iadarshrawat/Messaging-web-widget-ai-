@@ -29,7 +29,7 @@ const conversationFormData = new Map();
 export async function handleSunshineMessage(req, res) {
   try {
     const payload = req.body;
-    console.log("Received Sunshine webhook:", JSON.stringify(payload, null, 2));
+    // console.log("Received Sunshine webhook:", JSON.stringify(payload, null, 2));
 
     // Send 200 immediately so Zendesk doesn't timeout
     res.status(200).json({ success: true, received: true });

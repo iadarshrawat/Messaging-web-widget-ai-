@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { generateContent } from "../config/openai.js";
+import { CLAUDE_CONFIG } from "../config/claude.js";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -70,50 +71,71 @@ Respond with a valid JSON array of strings only — no explanation, no markdown,
 If no good options exist, respond with exactly: []`;
 
     console.log(`📤 Calling Claude API for quick replies with file: ${fileId}`);
-    const response = await anthropic.beta.messages.create(
-      {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 256,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "document",
-                source: { type: "file", file_id: fileId },
-                title: `${brand} Knowledge Base`,
-                context:
-                  "This is the official knowledge base for this brand. Only use this document to answer customer questions.",
-                cache_control: { type: "ephemeral" },
-              },
-              {
-                type: "text",
-                text: prompt,
-              },
-            ],
-          },
-        ],
-      },
-      {
-        headers: {
-          "anthropic-beta": "files-api-2025-04-14",
+    
+    let response;
+    try {
+      response = await anthropic.beta.messages.create(
+        {
+          model: CLAUDE_CONFIG.model,
+          max_tokens: 256,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "document",
+                  source: { type: "file", file_id: fileId },
+                  title: `${brand} Knowledge Base`,
+                  context:
+                    "This is the official knowledge base for this brand. Only use this document to answer customer questions.",
+                  cache_control: { type: "ephemeral" },
+                },
+                {
+                  type: "text",
+                  text: prompt,
+                },
+              ],
+            },
+          ],
         },
+        {
+          headers: {
+            "anthropic-beta": "files-api-2025-04-14",
+          },
+        }
+      );
+    } catch (apiErr) {
+      console.error("❌ Claude API call failed for quick replies:", apiErr.message);
+      if (apiErr.status) {
+        console.error(`   Status: ${apiErr.status}`);
       }
-    );
+      if (apiErr.response?.data) {
+        console.error(`   Response: ${JSON.stringify(apiErr.response.data)}`);
+      }
+      return []; // Gracefully return empty on API failure
+    }
 
     console.log(`✅ Claude API response received for quick replies`);
     const content = response.content[0];
-    if (content.type !== "text") {
-      console.warn("Unexpected response type from Claude");
+    if (!content || content.type !== "text") {
+      console.warn("⚠️ Unexpected response type from Claude (expected text)");
       return [];
     }
 
     console.log(`📝 Claude response for quick replies: ${content.text}`);
     const clean = content.text.replace(/```json|```/gi, "").trim();
-    const parsed = JSON.parse(clean);
+    
+    let parsed;
+    try {
+      parsed = JSON.parse(clean);
+    } catch (parseErr) {
+      console.warn(`⚠️ Failed to parse quick reply JSON: ${parseErr.message}`);
+      console.warn(`   Raw response: ${content.text}`);
+      return [];
+    }
 
     if (!Array.isArray(parsed)) {
-      console.warn("Quick reply response was not an array — returning []");
+      console.warn("⚠️ Quick reply response was not an array — returning []");
       return [];
     }
 
@@ -127,8 +149,10 @@ If no good options exist, respond with exactly: []`;
     console.log(`💬 Contextual quick replies generated: ${JSON.stringify(filtered)}`);
     return filtered;
   } catch (err) {
-    console.error("Contextual quick reply error:", err.message);
-    console.error("Error stack:", err.stack);
+    console.error("❌ Contextual quick reply error:", err.message);
+    if (err.stack) {
+      console.error("   Stack:", err.stack.split('\n').slice(0, 3).join('\n'));
+    }
     return [];
   }
 }

@@ -22,7 +22,7 @@ async function sendSunshineMessage(conversationId, message) {
       author: { type: "business" },
       content: {
         type: "text",
-        text,
+        markdownText:text,
         ...(quickReplies &&
           quickReplies.length > 0 && {
             actions: quickReplies.map((q) => ({
@@ -143,7 +143,7 @@ export async function sendDetailCollectionForm(conversationId) {
  * @param {string} conversationId
  * @returns {Promise<object>} - Zendesk passControl response
  */
-export async function escalateToAgent(conversationId) {
+export async function escalateToAgent(conversationId, formData = {}) {
   try {
     if (!process.env.SUNSHINE_APP_ID) {
       throw new Error("SUNSHINE_APP_ID not configured in .env");
@@ -161,9 +161,12 @@ export async function escalateToAgent(conversationId) {
     const sunshineClient = createSunshineClient();
 
     const metadata = { reason: "user_requested_agent" };
-    metadata["dataCapture.systemField.tags"] = "tag1,tag2";
+    metadata["dataCapture.systemField.tags"] = "tag1,tag2,escalated_to_agent";
     metadata["dataCapture.systemField.groupId"] = process.env.ZENDESK_SUPPORT_GROUP_ID;
-
+    // Email will be set by explicit ticket update in eventHandlers.js, but include here for reference
+    metadata["dataCapture.systemField.requester.email"] = formData.email || "";
+    metadata["dataCapture.systemField.requester.name"] = formData.name || "";
+    console.log("Passing metadata with escalation:", metadata);
     const response = await sunshineClient.post(
       `/apps/${process.env.SUNSHINE_APP_ID}/conversations/${conversationId}/passControl`,
       {
@@ -172,8 +175,6 @@ export async function escalateToAgent(conversationId) {
       },
     );
 
-    console.log(`✅ Escalated conversation ${conversationId} to agent workspace`);
-    console.log(`Pass control response:`, JSON.stringify(response.data)); 
     return response.data;
   } catch (err) {
     const status = err.response?.status;
@@ -326,7 +327,7 @@ export async function handleEscalateToAgent(
   }
 
   try {
-    await escalateToAgent(conversationId);
+    await escalateToAgent(conversationId, formData.data);
     conversationFormData.delete(conversationId);
   } catch (escalateErr) {
     console.error("Failed to escalate to agent:", escalateErr.message);
@@ -414,7 +415,7 @@ export async function handleEscalationCheck({
 
   // ── Case 2: Form submitted, data ready — escalate directly ───────────────
   if (formStatus === "form_submitted" && formData?.data) {
-    await escalateToAgent(conversationId);
+    await escalateToAgent(conversationId, formData.data);
     conversationFormData.delete(conversationId);
     return true;
   }

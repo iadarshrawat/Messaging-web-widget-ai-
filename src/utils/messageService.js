@@ -1,5 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createSunshineClient } from "../config/sunshine.js";
+import { CLAUDE_CONFIG } from "../config/claude.js";
+import axios from "axios";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -138,7 +140,7 @@ export async function generateReplyWithClaude(brand, history, messageBody) {
 
   const response = await anthropic.beta.messages.create(
     {
-      model: "claude-sonnet-4-20250514",
+      model: CLAUDE_CONFIG.model,
       max_tokens: 1024,
       system: systemPrompt,
       messages: [
@@ -189,7 +191,7 @@ export async function sendSunshineMessage(conversationId, message) {
       author: { type: "business" },
       content: {
         type: "text",
-        text,
+        markdownText:text,
         ...(quickReplies &&
           quickReplies.length > 0 && {
             actions: quickReplies.map((q) => ({
@@ -213,6 +215,35 @@ export async function sendSunshineMessage(conversationId, message) {
       err.response?.data || err.message,
     );
     throw err;
+  }
+}
+
+/**
+ * Send a typing indicator to Sunshine Conversations.
+ * state: 'start' | 'stop' (or true/false)
+ */
+export async function sendTypingIndicator(conversationId, state = 'start') {
+  try {
+    if (!process.env.SUNSHINE_APP_ID) {
+      throw new Error('SUNSHINE_APP_ID not configured in .env');
+    }
+
+    const sunshineClient = createSunshineClient();
+    const activityType = (state === true || state === 'start') ? 'typing:start' : 'typing:stop';
+
+    const path = `/apps/${process.env.SUNSHINE_APP_ID}/conversations/${conversationId}/activity`;
+    const payload = {
+      author: { type: 'business' },
+      type: activityType,
+    };
+
+    console.log(`Typing activity POST -> ${path} payload=${JSON.stringify(payload)}`);
+    const res = await sunshineClient.post(path, payload);
+    console.log('Typing activity response:', res.status, res.data);
+    return res.data;
+  } catch (err) {
+    console.warn('Failed to send typing indicator:', err.response?.status, err.response?.data || err.message);
+    return null;
   }
 }
 

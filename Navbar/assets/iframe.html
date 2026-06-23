@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Bot CSAT Report</title>
+  <script src="https://static.zdassets.com/zendesk_app_framework_sdk/2.0/zaf_sdk.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --surface2:  #222637;
+      --border:    rgba(255,255,255,0.08);
+      --text:      #e8eaf0;
+      --muted:     #8890a8;
+      --accent:    #5b6bff;
+
+      --satisfied:   #22d3a0;
+      --neutral:     #f5a623;
+      --unsatisfied: #ff5f6d;
+      --escalated:   #c084fc;
+      --insufficient:#8890a8;
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    /* ── TOP BAR ─────────────────────────────────────────── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .topbar-title {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .pulse {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--satisfied);
+      animation: pulse 2s infinite;
+      flex-shrink: 0;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    /* ── DATE FILTER BAR ─────────────────────────────────── */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-wrap: wrap;
+    }
+    .filter-label {
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .date-input {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 12px;
+      padding: 5px 8px;
+      outline: none;
+      cursor: pointer;
+      flex: 1;
+      min-width: 120px;
+    }
+    .date-input:focus { border-color: var(--accent); }
+    /* style the calendar icon in webkit */
+    .date-input::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+
+    .separator { color: var(--muted); font-size: 11px; }
+
+    /* ── PRESET CHIPS ────────────────────────────────────── */
+    .presets {
+      display: flex;
+      gap: 6px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      flex-wrap: wrap;
+    }
+    .chip {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+    }
+    .chip:hover, .chip.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    /* ── RUN BUTTON ──────────────────────────────────────── */
+    .run-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-sm);
+      padding: 5px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s;
+      white-space: nowrap;
+    }
+    .run-btn:hover { opacity: 0.85; }
+    .run-btn:disabled { opacity: 0.45; cursor: default; }
+
+    /* ── MAIN ────────────────────────────────────────────── */
+    .main { padding: 12px 14px; }
+
+    .timestamp {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .date-range-badge {
+      font-size: 11px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 2px 8px;
+      color: var(--text);
+    }
+
+    /* ── METRIC GRID ─────────────────────────────────────── */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .metric {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 10px 12px;
+    }
+    .metric-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; }
+    .metric-value { font-size: 22px; font-weight: 700; line-height: 1; }
+    .metric-sub   { font-size: 10px; color: var(--muted); margin-top: 3px; }
+    .metric-value.satisfied  { color: var(--satisfied); }
+    .metric-value.csat-score { color: var(--accent); }
+
+    /* ── DONUT ───────────────────────────────────────────── */
+    .donut-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .donut-wrap h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 12px; }
+    .donut-row { display: flex; align-items: center; gap: 18px; }
+    .donut-container { position: relative; width: 90px; height: 90px; flex-shrink: 0; }
+    .donut-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+    .donut-pct { font-size: 20px; font-weight: 700; color: var(--text); }
+    .donut-lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .legend { flex: 1; display: flex; flex-direction: column; gap: 7px; }
+    .legend-item { display: flex; align-items: center; justify-content: space-between; font-size: 11px; }
+    .legend-left { display: flex; align-items: center; gap: 6px; }
+    .legend-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .legend-name { color: var(--muted); }
+    .legend-count{ font-weight: 600; }
+
+    /* ── TICKETS ─────────────────────────────────────────── */
+    .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 8px; }
+    .tickets { display: flex; flex-direction: column; gap: 6px; }
+    .ticket {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+    .ticket-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 11px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .ticket-header:hover { background: var(--surface2); }
+    .score-pill {
+      font-size: 10px; font-weight: 600;
+      padding: 2px 8px; border-radius: 20px;
+      text-transform: capitalize; flex-shrink: 0;
+    }
+    .score-pill.satisfied   { background: rgba(34,211,160,0.15); color: var(--satisfied); }
+    .score-pill.neutral     { background: rgba(245,166,35,0.15);  color: var(--neutral); }
+    .score-pill.unsatisfied { background: rgba(255,95,109,0.15);  color: var(--unsatisfied); }
+    .score-pill.escalated   { background: rgba(192,132,252,0.15); color: var(--escalated); }
+    .score-pill.insufficient_data,
+    .score-pill.unknown,
+    .score-pill.error { background: rgba(136,144,168,0.15); color: var(--insufficient); }
+
+    .ticket-id   { font-size: 11px; font-weight: 600; flex-shrink: 0; color: var(--muted); }
+    .ticket-date { font-size: 10px; color: var(--muted); flex-shrink: 0; margin-left: auto; }
+    .chevron { font-size: 10px; color: var(--muted); transition: transform .2s; flex-shrink: 0; }
+    .ticket.open .chevron { transform: rotate(90deg); }
+    .ticket-body {
+      display: none;
+      padding: 8px 11px 11px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .ticket.open .ticket-body { display: block; }
+
+    /* ── STATES ──────────────────────────────────────────── */
+    .state-box { text-align: center; padding: 40px 20px; color: var(--muted); }
+    .state-box p { margin-top: 8px; font-size: 12px; }
+    .spinner {
+      width: 28px; height: 28px;
+      border: 2.5px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin: 0 auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error-box {
+      background: rgba(255,95,109,0.08);
+      border: 1px solid rgba(255,95,109,0.25);
+      border-radius: var(--radius-md);
+      padding: 12px; color: var(--unsatisfied);
+      font-size: 12px; margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="topbar-title">
+    <span class="pulse"></span>
+    AI Bot CSAT
+  </div>
+</div>
+
+<!-- DATE FILTER -->
+<div class="filter-bar">
+  <span class="filter-label">From</span>
+  <input type="date" class="date-input" id="fromDate" />
+  <span class="separator">→</span>
+  <span class="filter-label">To</span>
+  <input type="date" class="date-input" id="toDate" />
+  <button class="run-btn" id="runBtn" onclick="loadReport()">Run</button>
+</div>
+
+<!-- PRESET CHIPS -->
+<div class="presets">
+  <span class="chip active" data-preset="today"     onclick="applyPreset(this)">Today</span>
+  <span class="chip"        data-preset="yesterday" onclick="applyPreset(this)">Yesterday</span>
+  <span class="chip"        data-preset="7d"        onclick="applyPreset(this)">Last 7 days</span>
+  <span class="chip"        data-preset="30d"       onclick="applyPreset(this)">Last 30 days</span>
+  <span class="chip"        data-preset="month"     onclick="applyPreset(this)">This month</span>
+</div>
+
+<!-- MAIN CONTENT -->
+<div class="main" id="main">
+  <div class="state-box">
+    <div style="font-size:24px;margin-bottom:8px">📊</div>
+    <p>Select a date range and press <strong>Run</strong>.</p>
+  </div>
+</div>
+
+<script>
+  const BACKEND_URL = 'http://localhost:4000';
+  const client = ZAFClient.init();
+  client.invoke('resize', { width: '100%', height: '700px' });
+
+  const COLORS = {
+    satisfied:         '#22d3a0',
+    neutral:           '#f5a623',
+    unsatisfied:       '#ff5f6d',
+    escalated:         '#c084fc',
+    insufficient_data: '#8890a8',
+  };
+
+  // ── DATE HELPERS ─────────────────────────────────────────
+  function toYMD(d) {
+    return d.toISOString().split('T')[0];
+  }
+  function offsetDay(d, n) {
+    const r = new Date(d); r.setDate(r.getDate() + n); return r;
+  }
+  function startOfMonth(d) {
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  }
+
+  // ── PRESET CHIPS ─────────────────────────────────────────
+  function applyPreset(el) {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    el.classList.add('active');
+
+    const today = new Date();
+    const preset = el.dataset.preset;
+    let from, to;
+
+    if (preset === 'today') {
+      from = to = toYMD(today);
+    } else if (preset === 'yesterday') {
+      const y = offsetDay(today, -1);
+      from = to = toYMD(y);
+    } else if (preset === '7d') {
+      from = toYMD(offsetDay(today, -6));
+      to   = toYMD(today);
+    } else if (preset === '30d') {
+      from = toYMD(offsetDay(today, -29));
+      to   = toYMD(today);
+    } else if (preset === 'month') {
+      from = toYMD(startOfMonth(today));
+      to   = toYMD(today);
+    }
+
+    document.getElementById('fromDate').value = from;
+    document.getElementById('toDate').value   = to;
+  }
+
+  // Deselect preset chip when user manually changes a date
+  ['fromDate','toDate'].forEach(id => {
+    document.getElementById(id).addEventListener('change', () => {
+      document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    });
+  });
+
+  // ── DONUT ─────────────────────────────────────────────────
+  function buildDonut(breakdown, total) {
+    const R = 38, CX = 45, CY = 45, stroke = 10;
+    const circ = 2 * Math.PI * R;
+    const order = ['satisfied','neutral','unsatisfied','escalated'];
+    const gap = 3;
+    let paths = '', offset = 0;
+
+    order.forEach(key => {
+      const count = breakdown[key] || 0;
+      if (!count) return;
+      const frac  = count / (total || 1);
+      const dash  = Math.max(0, frac * circ - gap);
+      const space = circ - dash;
+      paths += `<circle cx="${CX}" cy="${CY}" r="${R}" fill="none"
+        stroke="${COLORS[key]}" stroke-width="${stroke}"
+        stroke-dasharray="${dash.toFixed(2)} ${space.toFixed(2)}"
+        stroke-dashoffset="${(-offset).toFixed(2)}"
+        stroke-linecap="butt"/>`;
+      offset += frac * circ;
+    });
+
+    return `<svg width="90" height="90" viewBox="0 0 90 90" role="img" aria-label="CSAT breakdown donut">
+      <circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="${stroke}"/>
+      ${paths}
+    </svg>`;
+  }
+
+  // ── RENDER ────────────────────────────────────────────────
+  function render(data) {
+    const s   = data.summary;
+    const pct = s.csat_percent !== null ? s.csat_percent + '%' : '—';
+    const ts  = data.generated_at ? new Date(data.generated_at).toLocaleString() : '—';
+    const dr  = data.date_range;
+    const rangeLabel = dr.from === dr.to ? dr.from : `${dr.from} → ${dr.to}`;
+
+    const metrics = `
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="metric-label">Total tickets</div>
+          <div class="metric-value">${s.total_tickets}</div>
+          <div class="metric-sub">${s.skipped_insufficient} skipped</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">CSAT score</div>
+          <div class="metric-value csat-score">${pct}</div>
+          <div class="metric-sub">${s.scored_tickets} scored</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Satisfied</div>
+          <div class="metric-value satisfied">${s.score_breakdown.satisfied}</div>
+          <div class="metric-sub">resolved by bot</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Escalated</div>
+          <div class="metric-value" style="color:var(--escalated)">${s.score_breakdown.escalated}</div>
+          <div class="metric-sub">needs follow-up</div>
+        </div>
+      </div>`;
+
+    const donut = `
+      <div class="donut-wrap">
+        <h3>Score distribution</h3>
+        <div class="donut-row">
+          <div class="donut-container">
+            ${buildDonut(s.score_breakdown, s.scored_tickets)}
+            <div class="donut-center">
+              <span class="donut-pct">${pct}</span>
+              <span class="donut-lbl">CSAT</span>
+            </div>
+          </div>
+          <div class="legend">
+            ${['satisfied','neutral','unsatisfied','escalated'].map(key => `
+              <div class="legend-item">
+                <div class="legend-left">
+                  <div class="legend-dot" style="background:${COLORS[key]}"></div>
+                  <span class="legend-name">${key.charAt(0).toUpperCase()+key.slice(1)}</span>
+                </div>
+                <span class="legend-count">${s.score_breakdown[key] || 0}</span>
+              </div>`).join('')}
+          </div>
+        </div>
+      </div>`;
+
+    const ticketRows = (data.tickets || []).map((t, i) => {
+      const score = t.score || 'unknown';
+      const dateStr = t.created_at
+        ? new Date(t.created_at).toLocaleDateString()
+        : '';
+      return `
+        <div class="ticket" id="t${i}">
+          <div class="ticket-header" onclick="toggleTicket(${i})">
+            <span class="score-pill ${score}">${score.replace('_',' ')}</span>
+            <span class="ticket-id">#${t.ticket_id}</span>
+            <span class="ticket-date">${dateStr}</span>
+            <span class="chevron">&#9658;</span>
+          </div>
+          <div class="ticket-body">
+            Score: <strong style="color:${COLORS[score] || 'var(--muted)'}">${score}</strong>
+            &nbsp;·&nbsp; Ticket ID: ${t.ticket_id}
+            ${dateStr ? `&nbsp;·&nbsp; ${dateStr}` : ''}
+          </div>
+        </div>`;
+    }).join('');
+
+    document.getElementById('main').innerHTML = `
+      <div class="timestamp">
+        <span>Generated ${ts}</span>
+        <span class="date-range-badge">${rangeLabel}</span>
+      </div>
+      ${metrics}
+      ${donut}
+      <div class="section-title" style="margin-top:4px">Tickets (${data.tickets.length})</div>
+      <div class="tickets">
+        ${ticketRows || '<div class="state-box"><p>No tickets found for this range.</p></div>'}
+      </div>`;
+
+    client.invoke('resize', { width: '100%', height: document.body.scrollHeight + 'px' });
+  }
+
+  function toggleTicket(i) {
+    document.getElementById('t' + i).classList.toggle('open');
+    client.invoke('resize', { width: '100%', height: document.body.scrollHeight + 'px' });
+  }
+
+  function showLoader() {
+    document.getElementById('main').innerHTML = `
+      <div class="state-box"><div class="spinner"></div><p>Loading report…</p></div>`;
+  }
+
+  function showError(msg) {
+    document.getElementById('main').innerHTML = `
+      <div class="error-box">⚠️ ${msg}</div>`;
+  }
+
+  // ── LOAD REPORT ───────────────────────────────────────────
+  async function loadReport() {
+    const from = document.getElementById('fromDate').value;
+    const to   = document.getElementById('toDate').value;
+
+    if (!from || !to) {
+      showError('Please select both a From and To date.');
+      return;
+    }
+
+    const btn = document.getElementById('runBtn');
+    btn.disabled = true;
+    btn.textContent = '…';
+    showLoader();
+
+    try {
+      const res  = await fetch(`${BACKEND_URL}/sunshine/report?from=${from}&to=${to}`, { mode: 'cors' });
+      const data = await res.json();
+
+      if (!data.success) { showError(data.error || 'Server error'); return; }
+      render(data);
+      client.invoke('notify', `CSAT ${data.summary.csat_percent ?? '—'}% · ${data.summary.total_tickets} tickets`, 'notice');
+
+    } catch (err) {
+      showError('Cannot reach backend: ' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Run';
+    }
+  }
+
+  // ── INIT: set default dates & health check ────────────────
+  (function init() {
+    const today = toYMD(new Date());
+    document.getElementById('fromDate').value = today;
+    document.getElementById('toDate').value   = today;
+
+    fetch(`${BACKEND_URL}/health`, { mode: 'cors' })
+      .catch(() => client.invoke('notify', '⚠️ Backend not running. Start with: node server.js', 'error'));
+  })();
+</script>
+</body>
+</html>

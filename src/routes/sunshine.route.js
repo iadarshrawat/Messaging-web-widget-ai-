@@ -3,6 +3,7 @@ import {
   handleSunshineMessage,
 } from "../controllers/sunshine.js";
 import { generateZendeskJWT } from "../controllers/widget_auth.js";
+import { generateReport } from "../controllers/navbarReport.js";
 
 const router = express.Router();
 
@@ -16,6 +17,9 @@ router.post("/sunshine/webhook", handleSunshineMessage);
 
 
 router.post("/sunshine/auth", generateZendeskJWT);
+
+
+router.get("/sunshine/report", generateReport);
 
 
 export default router;

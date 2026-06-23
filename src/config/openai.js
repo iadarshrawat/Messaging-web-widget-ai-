@@ -127,24 +127,3 @@ export async function generateContent(prompt, config = {}, modelName = null) {
   }
 }
 
-/**
- * List available models (for debugging)
- */
-export async function listAvailableModels() {
-  try {
-    const response = await axios.get(
-      `${OPENAI_CONFIG.baseUrl}/models`,
-      {
-        headers: {
-          "Authorization": `Bearer ${OPENAI_CONFIG.apiKey}`
-        }
-      }
-    );
-    
-    // Models available but not logged to reduce noise
-  } catch (error) {
-    console.error("Could not list models:", error.message);
-  }
-}
-
-

@@ -2,6 +2,7 @@ import https from "https";
 import dotenv from "dotenv";
 import { CLAUDE_CONFIG, createClaudeClient } from "../config/claude.js";
 import { createZendeskClient, ZENDESK_CONFIG } from "../config/zendesk.js";
+import { REPORT } from "../config/mongo.js";
 
 dotenv.config();
 
@@ -43,57 +44,119 @@ function zendeskAuth() {
 }
 
 function zendeskBase() {
-  // Prefer explicit baseUrl if configured, otherwise build from domain
   if (ZENDESK_CONFIG.baseUrl) {
     return `${ZENDESK_CONFIG.baseUrl}/api/v2`;
   }
   if (ZENDESK_CONFIG.domain) {
     return `https://${ZENDESK_CONFIG.domain}.zendesk.com/api/v2`;
   }
-  throw new Error('Zendesk domain not configured (ZENDESK_DOMAIN / ZENDESK_BASEURL)');
+  throw new Error("Zendesk domain not configured (ZENDESK_DOMAIN / ZENDESK_BASEURL)");
 }
 
-/**
- * Fetch today's AI agent tickets
- */
 async function fetchTodaysTickets() {
-  // Get today's date in ISO format at midnight IST (UTC+5:30)
   const now = new Date();
-  const todayIST = new Date(
-    now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })
-  );
-  todayIST.setHours(0, 0, 0, 0);
-  const createdAfter = todayIST.toISOString().replace(".000Z", "+05:30");
+  const todayEST = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
 
-  const url =
-    `${zendeskBase()}/tickets` +
-    `?support_type_scope=ai_agent` +
-    `&created_after=${encodeURIComponent(createdAfter)}` +
-    `&per_page=100`;
+  const yesterdayEST = new Date(todayEST);
+  yesterdayEST.setDate(yesterdayEST.getDate() - 1);
 
-  console.log(`\n📋 Fetching tickets created after: ${createdAfter}`);
+  const tomorrowEST = new Date(todayEST);
+  tomorrowEST.setDate(tomorrowEST.getDate() + 1);
 
-  const res = await httpRequest(url, {
-    headers: {
-      Authorization: zendeskAuth(),
-      "Content-Type": "application/json",
-    },
-  });
+  const fmt = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-  if (res.status !== 200) {
-    throw new Error(`Zendesk tickets API failed: ${res.status} — ${JSON.stringify(res.body)}`);
+  return await fetchTicketsByDateRange(fmt(yesterdayEST), fmt(tomorrowEST));
+}
+
+// Fetch tickets for a given date range and include escalated tickets.
+// We run two searches in parallel: AI agent tickets and escalated tickets, then dedupe.
+async function fetchTicketsByDateRange(startDate, endDate) {
+  const queryAgent = `type:ticket support_type:ai_agent created>${startDate} created<${endDate}`;
+  const queryEscal = `type:ticket tags:escalated_to_agent created>${startDate} created<${endDate}`;
+
+  const urlAgent = `${zendeskBase()}/search?query=${encodeURIComponent(queryAgent)}&per_page=100`;
+  const urlEscal = `${zendeskBase()}/search?query=${encodeURIComponent(queryEscal)}&per_page=100`;
+
+  console.log(`\n📋 Fetching tickets with queries:`);
+  console.log(`   • ${queryAgent}`);
+  console.log(`   • ${queryEscal}`);
+
+  const [resAgent, resEscal] = await Promise.all([
+    httpRequest(urlAgent, { headers: { Authorization: zendeskAuth(), "Content-Type": "application/json" } }),
+    httpRequest(urlEscal, { headers: { Authorization: zendeskAuth(), "Content-Type": "application/json" } }),
+  ]);
+
+  if (resAgent.status !== 200) {
+    throw new Error(`Zendesk search API failed (agent): ${resAgent.status}`);
+  }
+  if (resEscal.status !== 200) {
+    throw new Error(`Zendesk search API failed (escalated): ${resEscal.status}`);
   }
 
-  const tickets = res.body.tickets || [];
-  console.log(`✅ Found ${tickets.length} AI agent tickets today`);
+  const listAgent = resAgent.body.results || [];
+  const listEscal = resEscal.body.results || [];
+
+  // Merge and dedupe by ticket id
+  const map = new Map();
+  for (const t of listAgent) map.set(t.id, t);
+  for (const t of listEscal) map.set(t.id, { ...(map.get(t.id) || {}), ...t });
+
+  const tickets = Array.from(map.values());
+  console.log(`✅ Found ${tickets.length} tickets (including escalated)`);
   return tickets;
 }
 
-/**
- * Fetch comments for a specific ticket
- */
+// Process tickets in batches using Promise.all for concurrency control
+async function processTicketsInBatches(tickets, batchSize = 6) {
+  const results = [];
+  for (let i = 0; i < tickets.length; i += batchSize) {
+    const batch = tickets.slice(i, i + batchSize);
+    const promises = batch.map(async (ticket) => {
+      // mark escalated flag on ticket for downstream use
+      const isEsc = Array.isArray(ticket.tags) && ticket.tags.includes("escalated_to_agent");
+      ticket.is_escalated = isEsc;
+
+      if (isEsc) {
+        // Short-circuit: if the ticket was escalated to agent, we don't need LLM scoring.
+        // Create a lightweight escalated result and skip processTicket() to save API calls.
+        return {
+          ticket_id: ticket.id,
+          subject: ticket.subject,
+          created_at: ticket.created_at,
+          requester_id: ticket.requester_id,
+          message_count: 0,
+          conversation_preview: "(escalated to agent)",
+          csat: {
+            score: "escalated",
+            confidence: "high",
+            reason: "Ticket was escalated to an agent; skipped automated scoring",
+            key_issue: null,
+          },
+          status: "scored",
+          is_escalated: true,
+        };
+      }
+
+      const res = await processTicket(ticket);
+      // propagate escalated flag into result
+      res.is_escalated = false;
+      return res;
+    });
+
+    const settled = await Promise.all(promises);
+    results.push(...settled);
+
+    // small delay between batches to reduce rate-limit pressure
+    if (i + batchSize < tickets.length) await new Promise((r) => setTimeout(r, 300));
+  }
+  return results;
+}
+
 async function fetchTicketComments(ticketId) {
-  const url = `${zendeskBase()}/tickets/${ticketId}/comments`;
+  // Use the conversation_log endpoint which contains system comments and
+  // conversation messages produced by Sunshine (messaging events).
+  const url = `${zendeskBase()}/tickets/${ticketId}/conversation_log`;
 
   const res = await httpRequest(url, {
     headers: {
@@ -103,33 +166,47 @@ async function fetchTicketComments(ticketId) {
   });
 
   if (res.status !== 200) {
-    throw new Error(`Comments API failed for ticket ${ticketId}: ${res.status}`);
+    throw new Error(`Conversation log API failed for ticket ${ticketId}: ${res.status}`);
   }
 
-  console.log(res);
+  // The conversation_log returns an object with `events` (array).
+  const events = res.body.events || res.body || [];
 
-  return res.body.comments || [];
+  // Normalize events to the previous comments shape so cleanComments() can work
+  return (Array.isArray(events) ? events : []).map((ev) => {
+    // Extract message text from common places
+    let body = "";
+    if (ev.content) {
+      if (typeof ev.content.text === "string") body = ev.content.text;
+      else if (typeof ev.content.body === "string") body = ev.content.body;
+      else if (ev.content.type === "html" && ev.content.body) body = ev.content.body;
+    }
+
+    // Author id: prefer zendesk support user id (numeric) then sunshine user id
+    const author = ev.author || {};
+    const authorSupportId = author["zen:support:user_id"] ?? author.zen?.support?.user_id ?? author.user_id;
+    const authorSuncoId = author["zen:sunco:user_id"] ?? author.zen?.sunco?.user_id ?? null;
+
+    // Conversation events sometimes include metadata.is_public (false for system ticket comment)
+    // Treat undefined as public (so messaging events are considered), but respect explicit false
+    const isPublic = ev.metadata?.is_public === false ? false : true;
+
+    return {
+      id: ev.id,
+      type: ev.type,
+      body: body || "",
+      author_id: authorSupportId ?? authorSuncoId ?? null,
+      // keep raw author object in case callers want richer info
+      author_raw: author,
+      public: isPublic,
+      created_at: ev.created_at || ev.received_at,
+      raw: ev,
+    };
+  });
 }
 
 // ─── COMMENT CLEANER ─────────────────────────────────────────────────────────
 
-/**
- * Strips all Zendesk metadata from comments.
- * Returns only the actual chat lines with a speaker label.
- *
- * A comment has:
- *   - author_id: number
- *   - body: raw text (may contain HTML or system noise)
- *   - type: "Comment" | "VoiceComment" etc
- *   - public: bool
- *   - via.channel: "native_messaging" | "web" | etc
- *
- * We discard:
- *   - System/automation messages (empty bodies, ticket-created notices)
- *   - HTML tags
- *   - Duplicate whitespace / newlines
- *   - Internal (non-public) agent notes
- */
 function cleanComments(rawComments, ticketRequesterId) {
   const SYSTEM_NOISE_PATTERNS = [
     /^conversation with web user/i,
@@ -143,10 +220,8 @@ function cleanComments(rawComments, ticketRequesterId) {
   const cleaned = [];
 
   for (const comment of rawComments) {
-    // Skip internal (private) notes — those aren't part of the customer chat
     if (!comment.public) continue;
 
-    // Strip HTML tags
     let text = (comment.body || "")
       .replace(/<[^>]*>/g, " ")
       .replace(/&nbsp;/g, " ")
@@ -156,12 +231,8 @@ function cleanComments(rawComments, ticketRequesterId) {
       .replace(/\s+/g, " ")
       .trim();
 
-    // Skip empty or noisy system messages
     if (!text || SYSTEM_NOISE_PATTERNS.some((p) => p.test(text))) continue;
 
-    // Determine speaker
-    // - If author is the ticket requester → Customer
-    // - Otherwise → Bot (or Agent, but in ai_agent tickets it's the bot)
     const isCustomer = comment.author_id === ticketRequesterId;
     const speaker = isCustomer ? "Customer" : "Bot";
 
@@ -171,15 +242,9 @@ function cleanComments(rawComments, ticketRequesterId) {
   return cleaned;
 }
 
-/**
- * Format cleaned chat into a readable conversation string for Claude
- */
 function formatConversation(cleanedMessages) {
   if (!cleanedMessages.length) return "(No conversation content found)";
-
-  return cleanedMessages
-    .map(({ speaker, text }) => `${speaker}: ${text}`)
-    .join("\n");
+  return cleanedMessages.map(({ speaker, text }) => `${speaker}: ${text}`).join("\n");
 }
 
 // ─── CLAUDE SCORING ──────────────────────────────────────────────────────────
@@ -189,15 +254,15 @@ const SCORING_PROMPT = `You are a customer support quality analyst evaluating AI
 Read the conversation below and return ONLY a JSON object — no explanation, no markdown, no extra text.
 
 Scoring rules:
-- "satisfied"   : Customer got a clear, correct answer. Tone is positive or neutral at the end. No repeated questions. Short, resolved ending.
-- "neutral"     : Answer was given but customer seemed uncertain, asked the same thing more than once, or the ending was abrupt without confirmation.
-- "unsatisfied" : Customer expressed frustration, used negative language, repeated themselves without resolution, or gave up mid-conversation.
-- "escalated"   : Customer explicitly asked for a human agent, the bot said it can't help, or the conversation shows a clear failure to resolve.
-- "insufficient_data" : Conversation is too short (1-2 messages only) or has no real content to judge.
+- "satisfied"   : if customer asked a question related to the brand and the bot successfully answered it in a helpful way.
+
+- "unsatisfied" : Customer expressed frustration, used negative language, repeated themselves without resolution, or the bot gave out-of-context or irrelevant answers.
+
+- "neutral"     : Customer only greeted or asked a brief brand-related query (e.g. "hello", "hi", "what is your brand?"), or the interaction is informational/ambiguous and does not demonstrate clear satisfaction or dissatisfaction. Greeting + a simple brand question should be marked neutral, not satisfied.
 
 Return format:
 {
-  "score": "satisfied" | "neutral" | "unsatisfied" | "escalated" | "insufficient_data",
+  "score": "satisfied" | "unsatisfied",
   "confidence": "high" | "medium" | "low",
   "reason": "One concise sentence explaining the score",
   "key_issue": "The main topic or problem the customer asked about (null if unclear)"
@@ -207,10 +272,9 @@ Conversation:
 `;
 
 async function scoreConversationWithClaude(conversationText) {
+  const client = createClaudeClient();
 
-    const client = createClaudeClient();
-
-    const payload = JSON.stringify({
+  const payload = JSON.stringify({
     model: CLAUDE_CONFIG.model,
     max_tokens: 300,
     messages: [
@@ -221,26 +285,17 @@ async function scoreConversationWithClaude(conversationText) {
     ],
   });
 
-  const res = await client.post('/messages', payload);
-
-//   const res = await httpRequest("https://api.anthropic.com/v1/messages", {
-//     method: "POST",
-//     headers: {
-//       "Content-Type": "application/json",
-//       "x-api-key": CONFIG.anthropic.apiKey,
-//       "anthropic-version": "2023-06-01",
-//     },
-//     body: payload,
-//   });
+  const res = await client.post("/messages", payload);
 
   if (!res || res.status !== 200) {
-    throw new Error(`Claude API failed: ${res?.status || 'no-response'} — ${JSON.stringify(res?.data || res)}`);
+    throw new Error(
+      `Claude API failed: ${res?.status || "no-response"} — ${JSON.stringify(res?.data || res)}`
+    );
   }
 
   const rawText = res.data?.content?.[0]?.text || "{}";
 
   try {
-    // Strip any accidental markdown fences
     const cleaned = rawText.replace(/```json|```/g, "").trim();
     return JSON.parse(cleaned);
   } catch {
@@ -255,24 +310,38 @@ async function scoreConversationWithClaude(conversationText) {
 }
 
 // ─── MAIN PIPELINE ───────────────────────────────────────────────────────────
+// ─── REPLACE processTicket in report.js with this ────────────────────────────
 
 async function processTicket(ticket) {
   const ticketId = ticket.id;
   const requesterId = ticket.requester_id;
 
   try {
-  // 1. Fetch raw comments
-  const rawComments = await fetchTicketComments(ticketId);
-  const commentsCount = Array.isArray(rawComments) ? rawComments.length : (rawComments?.comments?.length || 0);
-  console.log(`  Fetched ${commentsCount} comments for ticket #${ticketId}`);
-
-    // 2. Clean and extract only chat content
+    // Use the existing fetchTicketComments + cleanComments
+    const rawComments = await fetchTicketComments(ticketId);
     const cleanedMessages = cleanComments(rawComments, requesterId);
 
-    // 3. Format as readable conversation
-    const conversationText = formatConversation(cleanedMessages);
+    console.log(`  💬 ${cleanedMessages.length} usable messages for ticket #${ticketId}`);
 
-    // 4. Score with Claude
+    if (cleanedMessages.length === 0) {
+      return {
+        ticket_id: ticketId,
+        subject: ticket.subject,
+        created_at: ticket.created_at,
+        requester_id: requesterId,
+        message_count: 0,
+        conversation_preview: "(No conversation content found)",
+        csat: {
+          score: "insufficient_data",
+          confidence: "low",
+          reason: "No readable messages found in ticket",
+          key_issue: null,
+        },
+        status: "scored",
+      };
+    }
+
+    const conversationText = formatConversation(cleanedMessages);
     const claudeScore = await scoreConversationWithClaude(conversationText);
 
     return {
@@ -285,6 +354,7 @@ async function processTicket(ticket) {
       csat: claudeScore,
       status: "scored",
     };
+
   } catch (err) {
     return {
       ticket_id: ticketId,
@@ -298,11 +368,11 @@ async function processTicket(ticket) {
   }
 }
 
-/**
- * Summarise results into CSAT stats
- */
+// ─── ALSO UPDATE summariseResults to handle insufficient_data properly ────────
 function summariseResults(results) {
-  const scored = results.filter((r) => r.csat && r.csat.score !== "insufficient_data");
+  const scored = results.filter(
+    (r) => r.csat && r.csat.score !== "insufficient_data" && r.status !== "error"
+  );
   const counts = { satisfied: 0, neutral: 0, unsatisfied: 0, escalated: 0 };
 
   for (const r of scored) {
@@ -310,24 +380,233 @@ function summariseResults(results) {
   }
 
   const total = scored.length;
-  const csatPercent = total
-    ? Math.round((counts.satisfied / total) * 100)
-    : null;
+  const csatPercent = total ? Math.round((counts.satisfied / total) * 100) : null;
 
   return {
     total_tickets: results.length,
     scored_tickets: total,
-    skipped_insufficient: results.length - total,
+    skipped_insufficient: results.filter((r) => r.csat?.score === "insufficient_data").length,
     score_breakdown: counts,
     csat_percent: csatPercent,
     errors: results.filter((r) => r.status === "error").length,
   };
 }
 
+// ─── ZENDESK CUSTOM OBJECT STORAGE ───────────────────────────────────────────
+
+/**
+ * Idempotent — safe to call on every run.
+ * Creates the custom object type + all required fields if they don't exist yet.
+ * Silently skips fields that already exist (422).
+ */
+async function ensureCSATCustomObject() {
+  const zendeskClient = createZendeskClient();
+  const objectKey = "ticket_csat_scores";
+
+  console.log(`\n🔧 Checking custom object '${objectKey}'...`);
+
+  // ── 1. Create object type if missing ──────────────────────────────────────
+  try {
+    await zendeskClient.get(`/custom_objects/${objectKey}`);
+    console.log(`   ✅ Object type already exists`);
+  } catch (err) {
+    if (err.response?.status !== 404) throw err;
+
+    console.log(`   📝 Creating object type...`);
+    await zendeskClient.post("/custom_objects", {
+      custom_object: {
+        key: objectKey,
+        title: "Ticket CSAT Scores",
+        title_pluralized: "Ticket CSAT Scores",
+        raw_title: "Ticket CSAT Scores",
+        raw_title_pluralized: "Ticket CSAT Scores",
+        description: "AI chatbot CSAT scores per ticket",
+        raw_description: "AI chatbot CSAT scores per ticket",
+      },
+    });
+    console.log(`   ✅ Object type created`);
+  }
+
+  // ── 2. Ensure every field exists ──────────────────────────────────────────
+  const fields = [
+    { key: "ticket_id",            type: "text",    title: "Ticket ID"            },
+    { key: "ticket_subject",       type: "text",    title: "Ticket Subject"       },
+    { key: "ticket_created_at",    type: "text",    title: "Ticket Created At"    }, // ISO string — text avoids date-format rejection
+    { key: "report_date",          type: "text",    title: "Report Date"          }, // YYYY-MM-DD
+    { key: "csat_score",           type: "text",    title: "CSAT Score"           }, // satisfied / neutral / unsatisfied / escalated / insufficient_data
+    { key: "confidence",           type: "text",    title: "Confidence"           }, // high / medium / low
+    { key: "reason",               type: "text",    title: "Scoring Reason"       },
+    { key: "key_issue",            type: "text",    title: "Key Issue"            },
+    { key: "message_count",        type: "integer", title: "Message Count"        },
+    { key: "conversation_preview", type: "text",    title: "Conversation Preview" },
+    { key: "processing_status",    type: "text",    title: "Processing Status"    }, // scored / error
+    { key: "error_message",        type: "text",    title: "Error Message"        },
+  ];
+
+  console.log(`   🔧 Syncing ${fields.length} custom fields...`);
+
+  for (const f of fields) {
+    try {
+      await zendeskClient.post(`/custom_objects/${objectKey}/fields`, {
+        custom_object_field: {
+          key: f.key,
+          type: f.type,
+          title: f.title,
+          raw_title: f.title,
+        },
+      });
+      console.log(`      ✅ Created field: ${f.key}`);
+    } catch (fieldErr) {
+      if (fieldErr.response?.status === 422) {
+        // Already exists — perfectly fine, continue
+      } else {
+        console.warn(
+          `      ⚠️  Could not create '${f.key}':`,
+          fieldErr.response?.data?.error ?? fieldErr.message
+        );
+      }
+    }
+  }
+
+  console.log(`✅ Custom object ready\n`);
+  return true;
+}
+
+/**
+ * Save one ticket's CSAT result to the Zendesk custom object.
+ *
+ * Two-step pattern (mirrors createZendeskImportRecord):
+ *   Step 1 — POST  /custom_objects/{key}/records       → get record id
+ *   Step 2 — PATCH /custom_objects/{key}/records/{id}  → populate custom fields
+ *
+ * @param   {object}        ticketResult  One item from the results[] array
+ * @returns {object|null}                 Saved record or null on hard failure
+ */
+async function saveTicketCSATRecord(ticketResult) {
+  const zendeskClient = createZendeskClient();
+  const objectKey = "ticket_csat_scores";
+
+  const {
+    ticket_id,
+    subject,
+    created_at,
+    csat,
+    status,
+    error,
+    message_count = 0,
+    conversation_preview = "",
+  } = ticketResult;
+
+  const today      = new Date().toISOString().split("T")[0];
+  const score      = csat?.score ?? "unknown";
+  const recordName = `Ticket #${ticket_id} | ${score} | ${today}`;
+
+  // ── Step 1: Create record (name only) ─────────────────────────────────────
+  let recordId;
+  try {
+    const createRes = await zendeskClient.post(
+      `/custom_objects/${objectKey}/records`,
+      { custom_object_record: { name: recordName } }
+    );
+
+    recordId = createRes.data?.custom_object_record?.id;
+    if (!recordId) throw new Error("No record ID returned in create response");
+
+  } catch (createErr) {
+    console.warn(
+      `  ⚠️  [Ticket #${ticket_id}] Record create failed:`,
+      createErr.message
+    );
+    return null;
+  }
+
+  // ── Step 2: Patch custom fields ───────────────────────────────────────────
+  try {
+    const updateRes = await zendeskClient.patch(
+      `/custom_objects/${objectKey}/records/${recordId}`,
+      {
+        custom_object_record: {
+          custom_object_fields: {
+            ticket_id:            String(ticket_id),
+            ticket_subject:       subject                          ?? "N/A",
+            ticket_created_at:    created_at                       ?? "",
+            report_date:          today,
+            csat_score:           score,
+            confidence:           csat?.confidence                 ?? "unknown",
+            reason:               csat?.reason                     ?? "",
+            key_issue:            csat?.key_issue                  ?? "",
+            message_count:        Number(message_count),
+            conversation_preview: String(conversation_preview ?? "").slice(0, 500),
+            processing_status:    status                           ?? "unknown",
+            error_message:        error                            ?? "",
+          },
+        },
+      }
+    );
+
+    return updateRes.data?.custom_object_record ?? { id: recordId };
+
+  } catch (patchErr) {
+    console.warn(
+      `  ⚠️  [Ticket #${ticket_id}] Field patch failed (record ${recordId}):`,
+      patchErr.message
+    );
+    // Record was created but fields are empty — return partial so caller knows
+    return { id: recordId, partial: true, error: patchErr.message };
+  }
+}
+
+/**
+ * Persist every result from runReport() to Zendesk with rate-limit-safe delays.
+ *
+ * @param   {object[]} results      results[] array from runReport()
+ * @param   {number}   [delayMs=400] ms to wait between records
+ * @returns {{ saved: number, failed: number, records: object[] }}
+ */
+async function saveAllCSATRecords(results, delayMs = 400) {
+  console.log(`\n💾 Saving ${results.length} CSAT records to Zendesk...\n`);
+
+  const savedRecords = [];
+  const failedIds    = [];
+
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    process.stdout.write(
+      `  [${i + 1}/${results.length}] Ticket #${result.ticket_id} ... `
+    );
+
+    const record = await saveTicketCSATRecord(result);
+
+    if (record) {
+      const tag = record.partial ? "⚠️  (partial)" : "✅";
+      process.stdout.write(`${tag}\n`);
+      savedRecords.push(record);
+    } else {
+      process.stdout.write(`❌\n`);
+      failedIds.push(result.ticket_id);
+    }
+
+    if (i < results.length - 1) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+
+  console.log(
+    `\n💾 Storage complete — saved: ${savedRecords.length}, failed: ${failedIds.length}`
+  );
+  if (failedIds.length) {
+    console.warn(`   ⚠️  Failed ticket IDs: ${failedIds.join(", ")}`);
+  }
+
+  return { saved: savedRecords.length, failed: failedIds.length, records: savedRecords };
+}
+
+// ─── MAIN ENTRY POINT ────────────────────────────────────────────────────────
+
 export async function runReport() {
   console.log("🚀 Zendesk AI Bot CSAT Scoring Pipeline\n");
 
-  // Validate config
+  // ── Validate config ────────────────────────────────────────────────────────
   if (!ZENDESK_CONFIG.email || !ZENDESK_CONFIG.apiToken) {
     console.error("❌ Missing ZENDESK_EMAIL or ZENDESK_API_TOKEN env vars");
     return { success: false, error: "Missing Zendesk credentials" };
@@ -338,44 +617,45 @@ export async function runReport() {
   }
 
   try {
-    // Step 1: Get today's tickets
+    // ── Step 1: Ensure Zendesk custom object + fields exist (idempotent) ────
+    await ensureCSATCustomObject();
+
+    // ── Step 2: Fetch today's tickets ────────────────────────────────────────
     const tickets = await fetchTodaysTickets();
-    console.log(`fetchtodaysticket`, tickets);
+
     if (!tickets.length) {
       console.log("ℹ️  No AI agent tickets found for today.");
       return { success: true, message: "No tickets found", summary: null };
     }
 
-    // Step 2: Process each ticket (sequential to avoid rate limits)
-    console.log(`\n🔄 Processing ${tickets.length} tickets...\n`);
-    const results = [];
+    // ── Step 3: Score each ticket with Claude (batched concurrent) ─────────
+    console.log(`\n🔄 Processing ${tickets.length} tickets (batched)...\n`);
+    const results = await processTicketsInBatches(tickets, 6);
 
-    for (let i = 0; i < tickets.length; i++) {
-      const ticket = tickets[i];
-      process.stdout.write(`  [${i + 1}/${tickets.length}] Ticket #${ticket.id} ... `);
+    // Persist to MongoDB and log per-result
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      process.stdout.write(`  [${i + 1}/${results.length}] Ticket #${result.ticket_id} ... `);
 
-      const result = await processTicket(ticket);
-      results.push(result);
+      if (result.csat?.score) {
+        await REPORT.create({ id: result.ticket_id, score: result.csat.score });
+      }
 
       if (result.status === "scored") {
         const score = result.csat.score;
         const emoji =
-          score === "satisfied" ? "✅" :
-          score === "neutral" ? "🟡" :
+          score === "satisfied"   ? "✅" :
+          score === "neutral"     ? "🟡" :
           score === "unsatisfied" ? "❌" :
-          score === "escalated" ? "🔺" : "⚪";
-        console.log(`${emoji} ${score} (${result.csat.confidence} confidence)`);
+          score === "escalated"   ? "🔺" : "⚪";
+        const escalatedMark = result.is_escalated ? " (escalated)" : "";
+        console.log(`${emoji} ${score} (${result.csat.confidence} confidence)${escalatedMark}`);
       } else {
         console.log(`⚠️  ${result.error}`);
       }
-
-      // Small delay to be polite to APIs
-      if (i < tickets.length - 1) {
-        await new Promise((r) => setTimeout(r, 300));
-      }
     }
 
-    // Step 3: Summarise
+    // ── Step 4: Summarise ─────────────────────────────────────────────────────
     const summary = summariseResults(results);
 
     console.log("\n" + "═".repeat(50));
@@ -395,11 +675,17 @@ export async function runReport() {
     }
     console.log("═".repeat(50));
 
-    // Step 4: Print full JSON results (pipe to file if needed)
-    console.log("\n📄 Full Results (JSON):\n");
-    console.log(JSON.stringify({ summary, results }, null, 2));
+    // ── Step 5: Save every ticket result to Zendesk custom object ────────────
+    const storageStats = await saveAllCSATRecords(results);
 
-    return { success: true, summary, results };
+    console.log(`\n📦 Zendesk storage — saved: ${storageStats.saved}, failed: ${storageStats.failed}`);
+
+    // ── Step 6: Full JSON output (pipe to file if needed) ────────────────────
+    console.log("\n📄 Full Results (JSON):\n");
+    console.log(JSON.stringify({ summary, storage: storageStats, results }, null, 2));
+
+    return { success: true, summary, storage: storageStats, results };
+
   } catch (err) {
     console.error("\n❌ Fatal error:", err.message);
     return { success: false, error: err.message };

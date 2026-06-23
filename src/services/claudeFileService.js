@@ -90,22 +90,6 @@ export async function mapFilesToBrands(files) {
   }
 }
 
-/**
- * Initialize file mapping on startup
- * Call this once when the server starts
- */
-export async function initializeFileMapping() {
-  try {
-    const files = await fetchClaudeFiles();
-    await mapFilesToBrands(files);
-    console.log("✅ File mapping initialized successfully");
-    return true;
-  } catch (err) {
-    console.error("❌ Failed to initialize file mapping:", err.message);
-    return false;
-  }
-}
-
 // ============================================================================
 // FILE SEARCH & CONTENT
 // ============================================================================
@@ -259,65 +243,6 @@ export function getBestAnswer(results) {
 
   // Otherwise return highest confidence result
   return results[0];
-}
-
-// ============================================================================
-// KNOWLEDGE BASE SEARCH (Unified interface)
-// ============================================================================
-
-/**
- * Search knowledge base for answer to customer question
- * Replaces the old Pinecone-based search
- * 
- * @param {string} integrationId - Sunshine integration ID (to determine brand)
- * @param {string} question - Customer's question
- * @returns {Promise<Object>} Search result with answer
- */
-export async function searchKnowledgeBase(integrationId, question) {
-  try {
-    if (!integrationId || !question) {
-      throw new Error("Integration ID and question are required");
-    }
-
-    // Step 1: Determine which brand this customer belongs to
-    const brand = getBrandFromIntegrationId(integrationId);
-    
-    if (brand === 'Unknown') {
-      console.warn(`⚠️ Unknown integration ID: ${integrationId}`);
-      return {
-        found: false,
-        answer: "I'm sorry, I couldn't determine which brand you're from.",
-        brand: 'Unknown',
-      };
-    }
-
-    console.log(`👤 Customer from ${brand} asked: "${question}"`);
-
-    // Step 2: Search all files for this brand
-    const results = await searchBrandFiles(brand, question);
-
-    // Step 3: Get the best answer
-    const bestAnswer = getBestAnswer(results);
-
-    if (bestAnswer && bestAnswer.found) {
-      return {
-        found: true,
-        answer: bestAnswer.answer,
-        brand: bestAnswer.brand,
-        fileId: bestAnswer.fileId,
-        confidence: bestAnswer.confidence,
-      };
-    }
-
-    return {
-      found: false,
-      answer: "I don't have information about that topic. Please contact our support team.",
-      brand,
-    };
-  } catch (err) {
-    console.error("❌ Knowledge base search error:", err.message);
-    throw err;
-  }
 }
 
 export { FILE_BRAND_MAP };

@@ -100,32 +100,4 @@ export function isAgentActive(activeSwitchboardIntegration) {
   );
 }
 
-/**
- * Check if message author is a customer (not bot/agent/system)
- * @param {object} author - Message author object from Sunshine
- * @returns {boolean} True if author is a customer
- */
-export function isCustomerMessage(author) {
-  if (author.type === "business") return false;
-  if (author.displayName?.includes("BOT") || author.displayName?.includes("bot")) return false;
-  if (author.subtypes?.includes("AI")) return false;
-  if (author.type !== "user" && author.type !== "end_user") return false;
-
-  return true;
-}
-
-/**
- * Check if message body is a quick reply payload
- * @param {string} messageBody - Message text
- * @returns {boolean} True if message is a quick reply action
- */
-export function isQuickReplyPayload(messageBody) {
-  return (
-    messageBody === "ESCALATE_TO_AGENT" ||
-    messageBody === "✅ Yes, Connect me to Agent" ||
-    messageBody === "CANCEL_ESCALATION" ||
-    messageBody === "❌ No, Cancel"
-  );
-}
-
 export { isConfigured };

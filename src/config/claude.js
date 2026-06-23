@@ -109,26 +109,6 @@ export function getBrandFromIntegrationId(integrationId) {
   return INTEGRATION_BRAND_MAP[integrationId] || 'Unknown';
 }
 
-/**
- * Get brand name from file ID
- * @param {string} fileId - Claude file ID
- * @returns {string|null} Brand name or null if not found
- */
-export function getBrandFromFileId(fileId) {
-  const fileInfo = FILE_BRAND_MAP[fileId];
-  return fileInfo ? fileInfo.brand : null;
-}
-
-/**
- * Get all file IDs for a specific brand
- * @param {string} brand - Brand name (Affinity, Ethos, ITBytes)
- * @returns {string[]} Array of file IDs for this brand
- */
-export function getFileIdsForBrand(brand) {
-  return Object.entries(FILE_BRAND_MAP)
-    .filter(([_, info]) => info.brand === brand)
-    .map(([fileId, _]) => fileId);
-}
 
 /**
  * Sleep utility for rate limiting and retries
