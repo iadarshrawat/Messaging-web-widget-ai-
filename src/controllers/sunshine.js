@@ -5,6 +5,7 @@ import {
   handleCancelEscalation,
   handleEscalationCheck,
 } from "../methods/sunshine.js";
+import { saveForm, getForm, deleteForm, setProcessing } from "../services/conversationFormService.js";
 import {
   handleMetadataUpdated,
   handleFormResponse,
@@ -19,8 +20,7 @@ import {
 
 dotenv.config();
 
-// ─── Track form collection status per conversation ────────────────────────────
-const conversationFormData = new Map();
+// NOTE: conversation form state is persisted in MongoDB via conversationFormService
 
 /**
  * Main webhook handler for Sunshine conversations
@@ -49,7 +49,7 @@ export async function handleSunshineMessage(req, res) {
           try {
             // Handle metadata updated (ticket creation)
             if (event.type === "conversation:updatedmetadata") {
-              await handleMetadataUpdated(event, conversationFormData);
+              await handleMetadataUpdated(event, null);
               continue;
             }
 
@@ -61,7 +61,7 @@ export async function handleSunshineMessage(req, res) {
               continue;
             }
 
-            await processMessageEvent(event, conversationFormData);
+            await processMessageEvent(event, null);
           } catch (eventErr) {
             console.error("Error processing event:", eventErr.message);
           }
@@ -87,25 +87,23 @@ async function processMessageEvent(event, conversationFormData) {
   const conversationId = event.payload.conversation.id;
 
   // Guard: skip if already being processed
-  if (conversationFormData.get(conversationId)?.processing) {
-    console.log(`Skipping duplicate event for conversation ${conversationId}`);
+  const existingDoc = await getForm(conversationId);
+  if (existingDoc?.processing) {
+    console.log(`Skipping duplicate event for conversation ${conversationId} — processing in DB`);
     return;
   }
 
   // Mark as processing
-  const existingData = conversationFormData.get(conversationId);
-  conversationFormData.set(conversationId, {
-    ...existingData,
-    processing: true,
-  });
+  await setProcessing(conversationId, true);
 
-  const clearProcessing = () => {
-    const d = conversationFormData.get(conversationId);
+  const clearProcessing = async () => {
+    const d = await getForm(conversationId);
     if (!d) return;
-    if (Object.keys(d).length === 1 && d.processing) {
-      conversationFormData.delete(conversationId);
+    if (!d.data || Object.keys(d.data || {}).length === 0) {
+      // no meaningful payload — delete
+      await deleteForm(conversationId);
     } else {
-      d.processing = false;
+      await setProcessing(conversationId, false);
     }
   };
 
@@ -119,7 +117,7 @@ async function processMessageEvent(event, conversationFormData) {
 
     // Skip bot/system/agent messages
     if (shouldSkipMessage(author)) {
-      clearProcessing();
+      await clearProcessing();
       return;
     }
 
@@ -137,10 +135,10 @@ async function processMessageEvent(event, conversationFormData) {
       await handleFormResponse(
         event,
         conversationId,
-        conversationFormData,
+        null, // handler will use DB service directly
         userName,
       );
-      clearProcessing();
+      await clearProcessing();
       return;
     }
 
@@ -154,11 +152,11 @@ async function processMessageEvent(event, conversationFormData) {
     if (isEscalationRequest(messageBody)) {
       await handleEscalateToAgent(
         conversationId,
-        conversationFormData,
+        null, // methods will use DB service
         activeSwitchboardIntegration,
         sendSunshineMessage,
       );
-      clearProcessing();
+      await clearProcessing();
       return;
     }
 
@@ -166,10 +164,10 @@ async function processMessageEvent(event, conversationFormData) {
     if (isEscalationCancellation(messageBody)) {
       await handleCancelEscalation(
         conversationId,
-        conversationFormData,
+        null,
         sendSunshineMessage,
       );
-      clearProcessing();
+      await clearProcessing();
       return;
     }
 
@@ -179,7 +177,7 @@ async function processMessageEvent(event, conversationFormData) {
         conversationId,
         messageBody,
         userName,
-        conversationFormData,
+        conversationFormData: null,
         activeSwitchboardIntegration,
         generateContent,
         sendMsg: sendSunshineMessage,

@@ -1,5 +1,6 @@
 import axios from "axios";
 import { createSunshineClient } from "../config/sunshine.js";
+import { getForm, deleteForm, saveForm } from "../services/conversationFormService.js";
 
 /**
  * Send a plain or quick-reply message to a Sunshine conversation.
@@ -311,7 +312,8 @@ export async function handleEscalateToAgent(
   activeSwitchboardIntegration,
   sendMsg,
 ) {
-  const formData = conversationFormData.get(conversationId);
+  // conversationFormData may be null when using DB-backed storage
+  const formData = conversationFormData ? conversationFormData.get(conversationId) : await getForm(conversationId);
 
   if (!formData?.data) {
     console.error("No form data found for escalation");
@@ -328,7 +330,7 @@ export async function handleEscalateToAgent(
 
   try {
     await escalateToAgent(conversationId, formData.data);
-    conversationFormData.delete(conversationId);
+    await deleteForm(conversationId);
   } catch (escalateErr) {
     console.error("Failed to escalate to agent:", escalateErr.message);
     try {
@@ -354,7 +356,11 @@ export async function handleCancelEscalation(
   conversationFormData,
   sendMsg,
 ) {
-  conversationFormData.delete(conversationId);
+  if (conversationFormData) {
+    conversationFormData.delete(conversationId);
+  } else {
+    await deleteForm(conversationId);
+  }
 
   try {
     await sendMsg(
@@ -396,8 +402,8 @@ export async function handleEscalationCheck({
   if (!wantsEscalation) return false;
 
   console.log("✅ Customer wants to create ticket, showing form...");
-  const formData = conversationFormData.get(conversationId);
-  const formStatus = formData?.status;
+  const formDoc = conversationFormData ? conversationFormData.get(conversationId) : await getForm(conversationId);
+  const formStatus = formDoc?.status;
 
   // ── Case 1: Form already sent — waiting for customer to fill it ──────────
   if (formStatus === "pending_form") {
@@ -416,24 +422,23 @@ export async function handleEscalationCheck({
   // ── Case 2: Form submitted, data ready — escalate directly ───────────────
   if (formStatus === "form_submitted" && formData?.data) {
     await escalateToAgent(conversationId, formData.data);
-    conversationFormData.delete(conversationId);
+    if (conversationFormData) conversationFormData.delete(conversationId);
+    else await deleteForm(conversationId);
     return true;
   }
 
   // ── Case 3: No recognised state (fresh conversation) — send the form ─────
   await sendDetailCollectionForm(conversationId);
 
-  conversationFormData.set(conversationId, {
+  await saveForm(conversationId, {
     status: "pending_form",
     initiatedBy: userName,
     timestamp: Date.now(),
+    processing: false,
   });
 
-  // Auto-expire after 30 minutes
-  setTimeout(
-    () => conversationFormData.delete(conversationId),
-    30 * 60 * 1000,
-  );
+  // Auto-expire after 30 minutes — cleanup in DB
+  setTimeout(async () => { await deleteForm(conversationId); }, 30 * 60 * 1000);
 
   console.log("📨 Form sent to customer");
   return true;

@@ -7,6 +7,7 @@ import {
   getBrandFromWidgetId,
   sendTypingIndicator,
 } from "../utils/messageService.js";
+import { saveForm, getForm, deleteForm } from "../services/conversationFormService.js";
 import { generateContextualQuickReplies } from "../utils/quickReplyService.js";
 
 /**
@@ -25,16 +26,16 @@ export async function handleMetadataUpdated(event, conversationFormData) {
 
     if (ticketId && conversationId) {
       try {
-        const formData = conversationFormData.get(conversationId);
+        const formData = await getForm(conversationId);
 
-        console.log(`🔎 conversationFormData.get(${conversationId}) => ${JSON.stringify(formData || null)}`);
+        console.log(`🔎 DB form for ${conversationId} => ${JSON.stringify(formData || null)}`);
 
         if (formData?.data) {
           const { name, email } = formData.data;
           console.log(
             `✅ Ticket ${ticketId} created with customer: ${name} (${email})`,
           );
-          
+
           // ✅ NEW: Update the ticket requester with the customer email
           try {
             await updateTicketRequester(ticketId, email, name);
@@ -51,7 +52,7 @@ export async function handleMetadataUpdated(event, conversationFormData) {
           );
         }
 
-        conversationFormData.delete(conversationId);
+        await deleteForm(conversationId);
       } catch (err) {
         console.error("Could not process ticket:", err.message);
       }
@@ -106,7 +107,8 @@ export async function handleFormResponse(
       "No description provided";
     const webUserId = author.userId;
 
-    conversationFormData.set(conversationId, {
+    // Persist form submission to MongoDB
+    await saveForm(conversationId, {
       status: "form_submitted",
       data: {
         name: customerName,
@@ -116,6 +118,7 @@ export async function handleFormResponse(
         webUserId,
       },
       submittedAt: Date.now(),
+      processing: false,
     });
 
     // Send escalation options

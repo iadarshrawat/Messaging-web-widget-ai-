@@ -446,46 +446,18 @@
         </div>
       </div>`;
 
-    const ticketRows = (data.tickets || []).map((t, i) => {
-      const score = t.score || 'unknown';
-      const dateStr = t.created_at
-        ? new Date(t.created_at).toLocaleDateString()
-        : '';
-      return `
-        <div class="ticket" id="t${i}">
-          <div class="ticket-header" onclick="toggleTicket(${i})">
-            <span class="score-pill ${score}">${score.replace('_',' ')}</span>
-            <span class="ticket-id">#${t.ticket_id}</span>
-            <span class="ticket-date">${dateStr}</span>
-            <span class="chevron">&#9658;</span>
-          </div>
-          <div class="ticket-body">
-            Score: <strong style="color:${COLORS[score] || 'var(--muted)'}">${score}</strong>
-            &nbsp;·&nbsp; Ticket ID: ${t.ticket_id}
-            ${dateStr ? `&nbsp;·&nbsp; ${dateStr}` : ''}
-          </div>
-        </div>`;
-    }).join('');
-
     document.getElementById('main').innerHTML = `
       <div class="timestamp">
         <span>Generated ${ts}</span>
         <span class="date-range-badge">${rangeLabel}</span>
       </div>
       ${metrics}
-      ${donut}
-      <div class="section-title" style="margin-top:4px">Tickets (${data.tickets.length})</div>
-      <div class="tickets">
-        ${ticketRows || '<div class="state-box"><p>No tickets found for this range.</p></div>'}
-      </div>`;
+      ${donut}`;
 
     client.invoke('resize', { width: '100%', height: document.body.scrollHeight + 'px' });
   }
 
-  function toggleTicket(i) {
-    document.getElementById('t' + i).classList.toggle('open');
-    client.invoke('resize', { width: '100%', height: document.body.scrollHeight + 'px' });
-  }
+  // Ticket expansion removed — tickets now display as a simple list without expandable details.
 
   function showLoader() {
     document.getElementById('main').innerHTML = `
