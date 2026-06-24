@@ -429,18 +429,12 @@ async function ensureCSATCustomObject() {
 
   // ── 2. Ensure every field exists ──────────────────────────────────────────
   const fields = [
-    { key: "ticket_id",            type: "text",    title: "Ticket ID"            },
-    { key: "ticket_subject",       type: "text",    title: "Ticket Subject"       },
-    { key: "ticket_created_at",    type: "text",    title: "Ticket Created At"    }, // ISO string — text avoids date-format rejection
-    { key: "report_date",          type: "text",    title: "Report Date"          }, // YYYY-MM-DD
-    { key: "csat_score",           type: "text",    title: "CSAT Score"           }, // satisfied / neutral / unsatisfied / escalated / insufficient_data
-    { key: "confidence",           type: "text",    title: "Confidence"           }, // high / medium / low
-    { key: "reason",               type: "text",    title: "Scoring Reason"       },
-    { key: "key_issue",            type: "text",    title: "Key Issue"            },
-    { key: "message_count",        type: "integer", title: "Message Count"        },
-    { key: "conversation_preview", type: "text",    title: "Conversation Preview" },
-    { key: "processing_status",    type: "text",    title: "Processing Status"    }, // scored / error
-    { key: "error_message",        type: "text",    title: "Error Message"        },
+    { key: "ticket_id",         type: "text", title: "Ticket ID" },
+    { key: "ticket_subject",    type: "text", title: "Ticket Subject" },
+    { key: "ticket_created_at", type: "text", title: "Ticket Created At" },
+    { key: "report_date",       type: "text", title: "Report Date" },
+    { key: "csat_score",        type: "text", title: "CSAT Score" },
+    { key: "reason",            type: "text", title: "Scoring Reason" },
   ];
 
   console.log(`   🔧 Syncing ${fields.length} custom fields...`);
@@ -472,134 +466,60 @@ async function ensureCSATCustomObject() {
   return true;
 }
 
-/**
- * Save one ticket's CSAT result to the Zendesk custom object.
- *
- * Two-step pattern (mirrors createZendeskImportRecord):
- *   Step 1 — POST  /custom_objects/{key}/records       → get record id
- *   Step 2 — PATCH /custom_objects/{key}/records/{id}  → populate custom fields
- *
- * @param   {object}        ticketResult  One item from the results[] array
- * @returns {object|null}                 Saved record or null on hard failure
- */
-async function saveTicketCSATRecord(ticketResult) {
-  const zendeskClient = createZendeskClient();
-  const objectKey = "ticket_csat_scores";
-
-  const {
-    ticket_id,
-    subject,
-    created_at,
-    csat,
-    status,
-    error,
-    message_count = 0,
-    conversation_preview = "",
-  } = ticketResult;
-
-  const today      = new Date().toISOString().split("T")[0];
-  const score      = csat?.score ?? "unknown";
-  const recordName = `Ticket #${ticket_id} | ${score} | ${today}`;
-
-  // ── Step 1: Create record (name only) ─────────────────────────────────────
-  let recordId;
+// function for storing a single ticket's CSAT result to custom object (for historical tracking)
+const saveTicketCSATRecord = async (result) => {
   try {
-    const createRes = await zendeskClient.post(
+    const zendeskClient = createZendeskClient();
+    const objectKey = "ticket_csat_scores";
+
+    const ticketId = result.ticket_id || "N/A";
+    const score = result.csat?.score || "insufficient_data";
+    const reason = result.csat?.reason || "";
+
+    const today = new Date().toISOString().split("T")[0];
+    const recordName = `Ticket #${ticketId} | ${today}`;
+
+    // Step 1: Create the record with just the name
+    const recordPayload = {
+      custom_object_record: {
+        name: recordName,
+      },
+    };
+
+    const createResponse = await zendeskClient.post(
       `/custom_objects/${objectKey}/records`,
-      { custom_object_record: { name: recordName } }
+      recordPayload
     );
 
-    recordId = createRes.data?.custom_object_record?.id;
-    if (!recordId) throw new Error("No record ID returned in create response");
+    const recordId = createResponse.data.custom_object_record?.id;
+    if (!recordId) throw new Error("Failed to create custom object record");
 
-  } catch (createErr) {
-    console.warn(
-      `  ⚠️  [Ticket #${ticket_id}] Record create failed:`,
-      createErr.message
+    // Step 2: Update the record with custom field values
+    const updatePayload = {
+      custom_object_record: {
+        custom_object_fields: {
+          ticket_id: ticketId,
+          ticket_subject: result.subject || "",
+          ticket_created_at: result.created_at || "",
+          report_date: today,
+          csat_score: score,
+          reason: reason,
+        },
+      },
+    };
+
+    const updateResponse = await zendeskClient.patch(
+      `/custom_objects/${objectKey}/records/${recordId}`,
+      updatePayload
     );
+
+    return updateResponse.data.custom_object_record;
+  } catch (err) {
+    console.warn(`⚠️ Could not create CSAT record:`, err.message);
     return null;
   }
+};
 
-  // ── Step 2: Patch custom fields ───────────────────────────────────────────
-  try {
-    const updateRes = await zendeskClient.patch(
-      `/custom_objects/${objectKey}/records/${recordId}`,
-      {
-        custom_object_record: {
-          custom_object_fields: {
-            ticket_id:            String(ticket_id),
-            ticket_subject:       subject                          ?? "N/A",
-            ticket_created_at:    created_at                       ?? "",
-            report_date:          today,
-            csat_score:           score,
-            confidence:           csat?.confidence                 ?? "unknown",
-            reason:               csat?.reason                     ?? "",
-            key_issue:            csat?.key_issue                  ?? "",
-            message_count:        Number(message_count),
-            conversation_preview: String(conversation_preview ?? "").slice(0, 500),
-            processing_status:    status                           ?? "unknown",
-            error_message:        error                            ?? "",
-          },
-        },
-      }
-    );
-
-    return updateRes.data?.custom_object_record ?? { id: recordId };
-
-  } catch (patchErr) {
-    console.warn(
-      `  ⚠️  [Ticket #${ticket_id}] Field patch failed (record ${recordId}):`,
-      patchErr.message
-    );
-    // Record was created but fields are empty — return partial so caller knows
-    return { id: recordId, partial: true, error: patchErr.message };
-  }
-}
-
-/**
- * Persist every result from runReport() to Zendesk with rate-limit-safe delays.
- *
- * @param   {object[]} results      results[] array from runReport()
- * @param   {number}   [delayMs=400] ms to wait between records
- * @returns {{ saved: number, failed: number, records: object[] }}
- */
-async function saveAllCSATRecords(results, delayMs = 400) {
-  console.log(`\n💾 Saving ${results.length} CSAT records to Zendesk...\n`);
-
-  const savedRecords = [];
-  const failedIds    = [];
-
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
-    process.stdout.write(
-      `  [${i + 1}/${results.length}] Ticket #${result.ticket_id} ... `
-    );
-
-    const record = await saveTicketCSATRecord(result);
-
-    if (record) {
-      const tag = record.partial ? "⚠️  (partial)" : "✅";
-      process.stdout.write(`${tag}\n`);
-      savedRecords.push(record);
-    } else {
-      process.stdout.write(`❌\n`);
-      failedIds.push(result.ticket_id);
-    }
-
-    if (i < results.length - 1) {
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
-  }
-
-  console.log(
-    `\n💾 Storage complete — saved: ${savedRecords.length}, failed: ${failedIds.length}`
-  );
-  if (failedIds.length) {
-    console.warn(`   ⚠️  Failed ticket IDs: ${failedIds.join(", ")}`);
-  }
-
-  return { saved: savedRecords.length, failed: failedIds.length, records: savedRecords };
-}
 
 // ─── MAIN ENTRY POINT ────────────────────────────────────────────────────────
 
@@ -633,12 +553,23 @@ export async function runReport() {
     const results = await processTicketsInBatches(tickets, 6);
 
     // Persist to MongoDB and log per-result
+    const storageStats = { saved: 0, failed: 0 };
+
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       process.stdout.write(`  [${i + 1}/${results.length}] Ticket #${result.ticket_id} ... `);
 
       if (result.csat?.score) {
-        await REPORT.create({ id: result.ticket_id, score: result.csat.score });
+        // Store in MongoDB and Zendesk custom object (safe-wrapped)
+        try {
+          await REPORT.create({ id: result.ticket_id, score: result.csat.score });
+          await saveTicketCSATRecord(result);
+          storageStats.saved++;
+          console.log(`Saved to MongoDB/Zendesk: ${result.ticket_id}`);
+        } catch (storeErr) {
+          storageStats.failed++;
+          console.warn(`⚠️ Failed to store CSAT for ticket ${result.ticket_id}:`, storeErr?.message || storeErr);
+        }
       }
 
       if (result.status === "scored") {
@@ -674,9 +605,6 @@ export async function runReport() {
       console.log(`\n🎯 CSAT Score  : ${summary.csat_percent}%`);
     }
     console.log("═".repeat(50));
-
-    // ── Step 5: Save every ticket result to Zendesk custom object ────────────
-    const storageStats = await saveAllCSATRecords(results);
 
     console.log(`\n📦 Zendesk storage — saved: ${storageStats.saved}, failed: ${storageStats.failed}`);
 
