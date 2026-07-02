@@ -1,65 +1,70 @@
-import mongoose from 'mongoose';
+// Simpler in-memory conversation form service
+// One form per conversationId (Map-backed)
 
-const ConversationFormSchema = new mongoose.Schema(
-  {
-    conversationId: { type: String, required: true, unique: true, index: true },
-    status: { type: String, default: 'pending_form' },
-    initiatedBy: { type: String },
-    data: { type: mongoose.Schema.Types.Mixed, default: {} },
-    submittedAt: { type: Date },
-    processing: { type: Boolean, default: false },
-  },
-  { timestamps: true }
-);
+const store = new Map(); // conversationId -> { status, data, submittedAt, processing, initiatedBy }
 
-const ConversationForm = mongoose.models.ConversationForm || mongoose.model('ConversationForm', ConversationFormSchema);
+// Auto-expire forms after 30 minutes
+const TTL_MS = 30 * 60 * 1000;
+setInterval(() => {
+  const cutoff = Date.now() - TTL_MS;
+  for (const [cid, doc] of store.entries()) {
+    if (!doc.submittedAt) continue;
+    if (new Date(doc.submittedAt).getTime() < cutoff) store.delete(cid);
+  }
+}, 60 * 1000);
 
 export async function saveForm(conversationId, formObj = {}) {
   try {
-    const update = {
-      ...formObj,
+    const doc = {
+      status: formObj.status || 'form_submitted',
+      data: formObj.data || {},
+      submittedAt: formObj.submittedAt ? new Date(formObj.submittedAt).toISOString() : new Date().toISOString(),
+      processing: !!formObj.processing,
+      initiatedBy: formObj.initiatedBy || null,
     };
-    const opts = { upsert: true, new: true, setDefaultsOnInsert: true };
-    const res = await ConversationForm.findOneAndUpdate({ conversationId }, update, opts).lean();
-    return res;
+    store.set(conversationId, doc);
+    return doc;
   } catch (err) {
-    console.error('saveForm error:', err.message);
+    console.error('saveForm error (simple in-memory):', err?.message || err);
     throw err;
   }
 }
 
 export async function getForm(conversationId) {
   try {
-    const res = await ConversationForm.findOne({ conversationId }).lean();
-    return res || null;
+    return store.get(conversationId) || null;
   } catch (err) {
-    console.error('getForm error:', err.message);
+    console.error('getForm error (simple in-memory):', err?.message || err);
     throw err;
   }
 }
 
 export async function deleteForm(conversationId) {
   try {
-    await ConversationForm.deleteOne({ conversationId });
+    store.delete(conversationId);
     return true;
   } catch (err) {
-    console.error('deleteForm error:', err.message);
+    console.error('deleteForm error (simple in-memory):', err?.message || err);
     return false;
   }
 }
 
 export async function setProcessing(conversationId, processing = false) {
   try {
-    const res = await ConversationForm.findOneAndUpdate(
-      { conversationId },
-      { processing },
-      { new: true }
-    ).lean();
-    return res;
+    const doc = store.get(conversationId);
+    if (!doc) return null;
+    doc.processing = processing;
+    store.set(conversationId, doc);
+    return doc;
   } catch (err) {
-    console.error('setProcessing error:', err.message);
+    console.error('setProcessing error (simple in-memory):', err?.message || err);
     return null;
   }
 }
 
-export default ConversationForm;
+export default {
+  saveForm,
+  getForm,
+  deleteForm,
+  setProcessing,
+};

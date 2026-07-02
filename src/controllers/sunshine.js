@@ -5,7 +5,7 @@ import {
   handleCancelEscalation,
   handleEscalationCheck,
 } from "../methods/sunshine.js";
-import { saveForm, getForm, deleteForm, setProcessing } from "../services/conversationFormService.js";
+import { getForm, deleteForm, setProcessing } from "../services/conversationFormService.js";
 import {
   handleMetadataUpdated,
   handleFormResponse,
@@ -16,6 +16,7 @@ import {
 } from "../handlers/eventHandlers.js";
 import {
   sendSunshineMessage,
+  sendWelcomeMessage,
 } from "../utils/messageService.js";
 
 dotenv.config();
@@ -29,9 +30,7 @@ dotenv.config();
 export async function handleSunshineMessage(req, res) {
   try {
     const payload = req.body;
-    // console.log("Received Sunshine webhook:", JSON.stringify(payload, null, 2));
 
-    // Send 200 immediately so Zendesk doesn't timeout
     res.status(200).json({ success: true, received: true });
 
     if (
@@ -47,13 +46,17 @@ export async function handleSunshineMessage(req, res) {
       try {
         for (const event of payload.events) {
           try {
-            // Handle metadata updated (ticket creation)
+            // NEW: Handle conversation creation -> send welcome message
+            if (event.type === "conversation:create") {
+              await sendWelcomeMessage(event);
+              continue;
+            }
+
             if (event.type === "conversation:updatedmetadata") {
               await handleMetadataUpdated(event, null);
               continue;
             }
 
-            // Only process conversation:message events
             if (event.type !== "conversation:message") continue;
 
             if (!event.payload?.conversation || !event.payload?.message) {
@@ -61,6 +64,9 @@ export async function handleSunshineMessage(req, res) {
               continue;
             }
 
+            const author = event.payload?.message?.author;
+            const webUserId = author?.userId || null;
+            event._webUserId = webUserId;
             await processMessageEvent(event, null);
           } catch (eventErr) {
             console.error("Error processing event:", eventErr.message);
@@ -86,24 +92,27 @@ export async function handleSunshineMessage(req, res) {
 async function processMessageEvent(event, conversationFormData) {
   const conversationId = event.payload.conversation.id;
 
-  // Guard: skip if already being processed
-  const existingDoc = await getForm(conversationId);
-  if (existingDoc?.processing) {
-    console.log(`Skipping duplicate event for conversation ${conversationId} — processing in DB`);
+  // Identify the web user (if available) to isolate form entries per user
+  const webUserId = event._webUserId || event.payload?.message?.author?.userId || null;
+
+  // Guard: skip if entry already being processed for this webUserId
+  const existingEntry = await getForm(conversationId, webUserId ? { webUserId } : {});
+  if (existingEntry?.processing) {
+    console.log(`Skipping duplicate event for conversation ${conversationId} (webUser=${webUserId}) — processing in DB`);
     return;
   }
 
-  // Mark as processing
-  await setProcessing(conversationId, true);
+  // Mark entry as processing (entry-level), fallback to doc-level if needed
+  await setProcessing(conversationId, true, webUserId ? { webUserId } : {});
 
-  const clearProcessing = async () => {
-    const d = await getForm(conversationId);
+    const clearProcessing = async () => {
+    const d = await getForm(conversationId, webUserId ? { webUserId } : {});
     if (!d) return;
     if (!d.data || Object.keys(d.data || {}).length === 0) {
-      // no meaningful payload — delete
-      await deleteForm(conversationId);
+      // no meaningful payload — delete this entry only
+      await deleteForm(conversationId, webUserId ? { webUserId } : { entryId: d.entryId });
     } else {
-      await setProcessing(conversationId, false);
+      await setProcessing(conversationId, false, webUserId ? { webUserId } : { entryId: d.entryId });
     }
   };
 
@@ -155,6 +164,7 @@ async function processMessageEvent(event, conversationFormData) {
         null, // methods will use DB service
         activeSwitchboardIntegration,
         sendSunshineMessage,
+        webUserId,
       );
       await clearProcessing();
       return;
@@ -181,6 +191,7 @@ async function processMessageEvent(event, conversationFormData) {
         activeSwitchboardIntegration,
         generateContent,
         sendMsg: sendSunshineMessage,
+        webUserId,
       });
 
       if (escalated) {

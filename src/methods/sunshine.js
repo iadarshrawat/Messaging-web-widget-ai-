@@ -1,54 +1,7 @@
 import axios from "axios";
 import { createSunshineClient } from "../config/sunshine.js";
 import { getForm, deleteForm, saveForm } from "../services/conversationFormService.js";
-
-/**
- * Send a plain or quick-reply message to a Sunshine conversation.
- *
- * @param {string} conversationId
- * @param {string|{text: string, quickReplies?: string[]}} message
- */
-async function sendSunshineMessage(conversationId, message) {
-  try {
-    if (!process.env.SUNSHINE_APP_ID) {
-      throw new Error("SUNSHINE_APP_ID not configured in .env");
-    }
-
-    const sunshineClient = createSunshineClient();
-    const text = typeof message === "string" ? message : message.text;
-    const quickReplies =
-      typeof message === "object" ? message.quickReplies : null;
-
-    const payload = {
-      author: { type: "business" },
-      content: {
-        type: "text",
-        markdownText:text,
-        ...(quickReplies &&
-          quickReplies.length > 0 && {
-            actions: quickReplies.map((q) => ({
-              type: "reply",
-              text: q,
-              payload: q.toUpperCase().replace(/[^A-Z0-9]+/g, "_"),
-            })),
-          }),
-      },
-    };
-
-    const response = await sunshineClient.post(
-      `/apps/${process.env.SUNSHINE_APP_ID}/conversations/${conversationId}/messages`,
-      payload,
-    );
-
-    return response.data;
-  } catch (err) {
-    console.error(
-      "Failed to send Sunshine message:",
-      err.response?.data || err.message,
-    );
-    throw err;
-  }
-}
+import { sendSunshineMessage } from "../utils/messageService.js";
 
 /**
  * Send the detail-collection form to the customer so we can gather their info
@@ -311,9 +264,12 @@ export async function handleEscalateToAgent(
   conversationFormData,
   activeSwitchboardIntegration,
   sendMsg,
+  webUserId = null,
 ) {
   // conversationFormData may be null when using DB-backed storage
-  const formData = conversationFormData ? conversationFormData.get(conversationId) : await getForm(conversationId);
+  const formData = conversationFormData
+    ? conversationFormData.get(conversationId)
+    : await getForm(conversationId, webUserId ? { webUserId } : {});
 
   if (!formData?.data) {
     console.error("No form data found for escalation");
@@ -330,7 +286,7 @@ export async function handleEscalateToAgent(
 
   try {
     await escalateToAgent(conversationId, formData.data);
-    await deleteForm(conversationId);
+    await deleteForm(conversationId, webUserId ? { webUserId } : {});
   } catch (escalateErr) {
     console.error("Failed to escalate to agent:", escalateErr.message);
     try {
@@ -356,9 +312,12 @@ export async function handleCancelEscalation(
   conversationFormData,
   sendMsg,
 ) {
+  // If conversationFormData is present (in-memory), remove the entry by conversationId.
+  // When using DB-backed storage, prefer deleting the entry for the current webUserId
   if (conversationFormData) {
     conversationFormData.delete(conversationId);
   } else {
+    // No webUserId known here — delete entire conversation key (fallback)
     await deleteForm(conversationId);
   }
 
@@ -395,6 +354,7 @@ export async function handleEscalationCheck({
   generateContent,
   sendMsg,
 }) {
+  const webUserId = arguments[0]?.webUserId || null;
   console.log(`🔍 Checking if ticket request: "${messageBody}"`);
   const wantsEscalation = await shouldCreateTicket(messageBody, generateContent);
   console.log(`📋 Ticket request detected: ${wantsEscalation}`);
@@ -402,7 +362,9 @@ export async function handleEscalationCheck({
   if (!wantsEscalation) return false;
 
   console.log("✅ Customer wants to create ticket, showing form...");
-  const formDoc = conversationFormData ? conversationFormData.get(conversationId) : await getForm(conversationId);
+  const formDoc = conversationFormData
+    ? conversationFormData.get(conversationId)
+    : await getForm(conversationId, webUserId ? { webUserId } : {});
   const formStatus = formDoc?.status;
 
   // ── Case 1: Form already sent — waiting for customer to fill it ──────────
@@ -420,10 +382,10 @@ export async function handleEscalationCheck({
   }
 
   // ── Case 2: Form submitted, data ready — escalate directly ───────────────
-  if (formStatus === "form_submitted" && formData?.data) {
-    await escalateToAgent(conversationId, formData.data);
+  if (formStatus === "form_submitted" && formDoc?.data) {
+    await escalateToAgent(conversationId, formDoc.data, null, null, webUserId);
     if (conversationFormData) conversationFormData.delete(conversationId);
-    else await deleteForm(conversationId);
+    else await deleteForm(conversationId, webUserId ? { webUserId } : {});
     return true;
   }
 
@@ -433,7 +395,9 @@ export async function handleEscalationCheck({
   await saveForm(conversationId, {
     status: "pending_form",
     initiatedBy: userName,
-    timestamp: Date.now(),
+    entryId: undefined,
+    data: { webUserId },
+    submittedAt: Date.now(),
     processing: false,
   });
 

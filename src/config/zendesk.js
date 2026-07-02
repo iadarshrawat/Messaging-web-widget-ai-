@@ -67,11 +67,6 @@ export function createZendeskClient() {
   });
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-
 /**
  * Fetch tickets using SEARCH API with DATE FILTERING
  * Handles Zendesk's 1000 ticket limit by rolling the start date

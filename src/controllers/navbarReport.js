@@ -1,4 +1,4 @@
-import { REPORT } from "../config/mongo.js";
+import { createZendeskClient } from "../config/zendesk.js";
 
 /**
  * GET /api/report?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -36,21 +36,58 @@ export async function generateReport(req, res) {
       });
     }
 
-    // Build UTC range: start of fromDate → end of toDate
-    const startOfRange = new Date(Date.UTC(fromDate.getUTCFullYear(), fromDate.getUTCMonth(), fromDate.getUTCDate(), 0, 0, 0, 0));
-    const endOfRange   = new Date(Date.UTC(toDate.getUTCFullYear(),   toDate.getUTCMonth(),   toDate.getUTCDate(),   23, 59, 59, 999));
+    // ── 2. Query Zendesk custom object (ticket_csat_scores) ────────────────
+    const zendeskClient = createZendeskClient();
+    const objectKey = "ticket_csat_scores";
 
-    // ── 2. Query MongoDB ───────────────────────────────────────────────────
-    const records = await REPORT.find({
-      createdAt: { $gte: startOfRange, $lte: endOfRange },
-    }).lean();
+    // Build filter payload for Zendesk custom object search.
+    // Note: some Zendesk instances do not support range operators ($gte/$lte)
+    // on text custom fields. We use equality for single-day queries on the
+    // `report_date` custom field, and for multi-day ranges we filter by the
+    // record's `created_at` timestamp (ISO range) which the API accepts.
+    let filter = {};
+    if (fromStr === toStr) {
+      // Exact date — use the custom field (string YYYY-MM-DD)
+      filter = { "custom_object_fields.report_date": { "$eq": fromStr } };
+    } else {
+      // Date range — filter by record created_at (ISO timestamps)
+      const fromIso = `${fromStr}T00:00:00Z`;
+      const toIso = `${toStr}T23:59:59Z`;
+      filter = {
+        "$and": [
+          { "created_at": { "$gte": fromIso } },
+          { "created_at": { "$lte": toIso } },
+        ],
+      };
+    }
+
+    const searchPayload = {
+      filter,
+      sort: "-created_at",
+    };
+
+    let searchRes;
+    try {
+      searchRes = await zendeskClient.post(
+        `/custom_objects/${objectKey}/records/search`,
+        searchPayload
+      );
+    } catch (err) {
+      console.error("Zendesk filtered search error:", err.response?.data || err.message);
+      const msg = err.response?.data?.error?.message || err.response?.data || err.message;
+      return res.status(502).json({ success: false, error: `Zendesk filtered search failed: ${msg}` });
+    }
+
+    const records = searchRes.data?.custom_object_records || searchRes.data?.results || [];
 
     // ── 3. Build summary ───────────────────────────────────────────────────
     const breakdown = { satisfied: 0, neutral: 0, unsatisfied: 0, escalated: 0 };
     let skipped = 0;
 
     for (const r of records) {
-      const score = r.score;
+      // Zendesk custom object record shape: { custom_object_fields: { ticket_id, csat_score, ... } }
+      const fields = r.custom_object_fields || {};
+      const score = fields.csat_score;
       if (!score || score === "insufficient_data") {
         skipped++;
       } else if (breakdown[score] !== undefined) {
@@ -64,11 +101,14 @@ export async function generateReport(req, res) {
       : null;
 
     // ── 4. Shape ticket list ───────────────────────────────────────────────
-    const tickets = records.map((r) => ({
-      ticket_id:  r.id,
-      score:      r.score ?? null,
-      created_at: r.createdAt ?? null,
-    }));
+    const tickets = records.map((r) => {
+      const fields = r.custom_object_fields || {};
+      return {
+        ticket_id:  fields.ticket_id || null,
+        score:      fields.csat_score || null,
+        created_at: fields.ticket_created_at || r.created_at || null,
+      };
+    });
 
     return res.status(200).json({
       success:      true,

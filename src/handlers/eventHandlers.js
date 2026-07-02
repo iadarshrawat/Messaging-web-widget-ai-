@@ -26,6 +26,8 @@ export async function handleMetadataUpdated(event, conversationFormData) {
 
     if (ticketId && conversationId) {
       try {
+        // Try to find any entry matching the ticket requester (if present)
+        // We don't have webUserId available here, attempt to read the most recent entry
         const formData = await getForm(conversationId);
 
         console.log(`🔎 DB form for ${conversationId} => ${JSON.stringify(formData || null)}`);
@@ -36,7 +38,6 @@ export async function handleMetadataUpdated(event, conversationFormData) {
             `✅ Ticket ${ticketId} created with customer: ${name} (${email})`,
           );
 
-          // ✅ NEW: Update the ticket requester with the customer email
           try {
             await updateTicketRequester(ticketId, email, name);
           } catch (err) {
@@ -52,7 +53,12 @@ export async function handleMetadataUpdated(event, conversationFormData) {
           );
         }
 
-        await deleteForm(conversationId);
+        // Delete only the entry that was used (if we have entryId), otherwise delete the whole doc
+        if (formData?.entryId) {
+          await deleteForm(conversationId, { entryId: formData.entryId });
+        } else {
+          await deleteForm(conversationId);
+        }
       } catch (err) {
         console.error("Could not process ticket:", err.message);
       }
@@ -72,7 +78,6 @@ export async function handleMetadataUpdated(event, conversationFormData) {
 export async function handleFormResponse(
   event,
   conversationId,
-  conversationFormData,
   userName,
 ) {
   try {
@@ -105,10 +110,11 @@ export async function handleFormResponse(
     const issueDescription =
       fields.find((f) => f.name === "description")?.text ||
       "No description provided";
-    const webUserId = author.userId;
+  const webUserId = author.userId || event._webUserId || null;
 
-    // Persist form submission to MongoDB
+    // Persist form submission to MongoDB (entry-scoped by webUserId)
     await saveForm(conversationId, {
+      entryId: undefined,
       status: "form_submitted",
       data: {
         name: customerName,

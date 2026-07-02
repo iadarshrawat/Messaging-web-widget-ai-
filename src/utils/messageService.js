@@ -1,7 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createSunshineClient } from "../config/sunshine.js";
 import { CLAUDE_CONFIG } from "../config/claude.js";
-import axios from "axios";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -215,6 +214,30 @@ export async function sendSunshineMessage(conversationId, message) {
       err.response?.data || err.message,
     );
     throw err;
+  }
+}
+
+export async function sendWelcomeMessage(event) {
+  const sunshineClient = createSunshineClient();
+  try {
+    const conversationId = event.payload?.conversation?.id;
+    if (!conversationId) {
+      console.error("Missing conversation id on create event");
+      return;
+    }
+
+    const response = await sunshineClient.post(
+      `/apps/${process.env.SUNSHINE_APP_ID}/conversations/${conversationId}/messages`,
+      {
+        author: { type: "business" },
+        content: {
+          type: "text",
+          text: "Welcome to Mr Brand Support 👋 How may I help you today?",
+        },
+      },
+    );
+  } catch (err) {
+    console.error("Error sending welcome message:", err.response?.data || err.message);
   }
 }
 
