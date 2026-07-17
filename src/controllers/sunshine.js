@@ -1,5 +1,4 @@
 import dotenv from "dotenv";
-import { generateContent } from "../config/openai.js";
 import {
   handleEscalateToAgent,
   handleCancelEscalation,
@@ -189,7 +188,6 @@ async function processMessageEvent(event, conversationFormData) {
         userName,
         conversationFormData: null,
         activeSwitchboardIntegration,
-        generateContent,
         sendMsg: sendSunshineMessage,
         webUserId,
       });

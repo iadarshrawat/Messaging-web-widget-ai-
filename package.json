@@ -9,6 +9,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.7.0",
     "multer": "^2.0.2",
+    "node-cron": "^4.6.0",
     "node-fetch": "^3.3.2",
     "p-queue": "^9.1.0"
   },
@@ -16,11 +17,9 @@
   "version": "1.0.0",
   "description": "",
   "main": "server.js",
-  
   "scripts": {
     "start": "node server.js"
   },
-  
   "keywords": [],
   "author": "",
   "license": "ISC",

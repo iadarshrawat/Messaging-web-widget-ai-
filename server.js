@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import sunshineRoutes from "./src/routes/sunshine.route.js";
 import { runReport } from "./src/controllers/report.js";
 import { connectDB } from "./src/config/mongo.js";
+import cron from 'node-cron';
 
 dotenv.config();
 
@@ -31,43 +32,42 @@ app.get("/health", (_, res) => {
 
 async function startServer() {
   try {
-
-    // connect with mongoDB?
-      connectDB();
     
     // Start listening immediately
     app.listen(PORT, () => {
-      console.log(`Server running at http://localhost:${PORT}`);
+      console.log(`Server is running`);
 
-      // Setup CSAT Report Cron Job (runs every 1 minute)
-      console.log("🕐 Setting up CSAT Report cron job (every 1 minute)...");
+      // Setup CSAT Report Cron Job (runs every day at 12:00 AM IST)
+      console.log("🕐 Setting up CSAT Report cron job (daily at 12:00 AM IST)...");
       let reportRunning = false;
 
-      // setInterval(async () => {
-      //   if (reportRunning) {
-      //     console.log("⏭️  Skipping CSAT report (previous run still in progress)");
-      //     return;
-      //   }
+      cron.schedule('0 0 * * *', async () => {
+        if (reportRunning) {
+          console.log("⏭️  Skipping CSAT report (previous run still in progress)");
+          return;
+        }
 
-      //   reportRunning = true;
-      //   try {
-      //     console.log(`\n📅 [${new Date().toISOString()}] Starting CSAT report run...`);
-      //     const result = await runReport();
-          
-      //     if (result.success) {
-      //       console.log(`✅ CSAT report completed successfully`);
-      //       if (result.summary) {
-      //         console.log(`   📊 Processed ${result.summary.total_tickets} tickets, CSAT: ${result.summary.csat_percent}%`);
-      //       }
-      //     } else {
-      //       console.error(`❌ CSAT report failed: ${result.error}`);
-      //     }
-      //   } catch (err) {
-      //     console.error(`❌ Unexpected error in CSAT report: ${err.message}`);
-      //   } finally {
-      //     reportRunning = false;
-      //   }
-      // }, 60000); // 60000 ms = 1 minute
+        reportRunning = true;
+        try {
+          console.log(`\n📅 [${new Date().toISOString()}] Starting CSAT report run...`);
+          const result = await runReport();
+
+          if (result.success) {
+            console.log(`✅ CSAT report completed successfully`);
+            if (result.summary) {
+              console.log(`   📊 Processed ${result.summary.total_tickets} tickets, CSAT: ${result.summary.csat_percent}%`);
+            }
+          } else {
+            console.error(`❌ CSAT report failed: ${result.error}`);
+          }
+        } catch (err) {
+          console.error(`❌ Unexpected error in CSAT report: ${err.message}`);
+        } finally {
+          reportRunning = false;
+        }
+      }, {
+        timezone: "Asia/Kolkata"
+      });
 
       console.log("✅ CSAT Report cron job started");
     });

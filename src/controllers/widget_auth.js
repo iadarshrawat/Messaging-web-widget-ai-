@@ -20,7 +20,7 @@ export function generateZendeskJWT(req, res) {
       email: user?.email || 'UNKNOWN@example.com',
       email_verified: true
     },
-    'YC7Jj9UuFGGHLaADK003LEDfm7FkvBoMaRPhRfVMpm8zuV7lV5BHsFjarhtZUoPGilxnWZdvs-_MkcPVuWbiLQ',
+    process.env.JWT_SECRET,
     { 
       algorithm: "HS256",
       expiresIn: "5m",

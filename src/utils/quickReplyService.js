@@ -1,5 +1,4 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { generateContent } from "../config/openai.js";
 import { CLAUDE_CONFIG } from "../config/claude.js";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
